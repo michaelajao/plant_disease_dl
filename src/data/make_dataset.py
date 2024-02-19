@@ -360,6 +360,102 @@ torch.save(model.state_dict(), '../../models/plant_disease_model.pth')
 
 
 
+import torchvision.models as models
+
+# # Load a pre-trained ResNet-50 model
+# resnet50 = models.resnet50(pretrained=True)
+
+# # To use the model for inference
+# resnet50.eval()
+
+# transfer learning with resnet50
+
+# Load the pre-trained ResNet-50 model
+resnet50 = models.resnet50(pretrained=True)
+
+# Freeze the model parameters
+for param in resnet50.parameters():
+    param.requires_grad = False
+    
+# Replace the final fully connected layer
+num_ftrs = resnet50.fc.in_features
+resnet50.fc = nn.Linear(num_ftrs, len(train_data.classes))
+
+# Move the model to the GPU
+resnet50 = resnet50.to(device)
+
+# Define the loss function and optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(resnet50.parameters(), lr=0.001)
+sceduler = optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
+
+# Train the model
+n_epochs = 50
+early_stopping = EarlyStopping(patience=3, min_delta=0.01)
+
+train_losses = []
+valid_losses = []
+
+# Train the model
+for epoch in range(n_epochs):
+    print(f'Epoch {epoch + 1}\n-------------------------------')
+    resnet50.train()
+    train_loss = 0.0
+    valid_loss = 0.0
+    for images, labels in tqdm(train_loader):
+        images, labels = images.to(device), labels.to(device)
+        optimizer.zero_grad()
+        outputs = resnet50(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        train_loss += loss.item() * images.size(0)
+    train_loss = train_loss / len(train_loader.dataset)
+    train_losses.append(train_loss)
+    print(f'Training Loss: {train_loss}')
+    
+    resnet50.eval()
+    with torch.no_grad():
+        for images, labels in valid_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = resnet50(images)
+            loss = criterion(outputs, labels)
+            valid_loss += loss.item() * images.size(0)
+        valid_loss = valid_loss / len(valid_loader.dataset)
+        valid_losses.append(valid_loss)
+        print(f'Validation Loss: {valid_loss}')
+        early_stopping(valid_loss)
+        if early_stopping.early_stop:
+            print("Early stopping")
+            break
+    sceduler.step()
+    
+print('Finished Training')
+
+# Plot the training and validation loss
+plt.plot(train_losses, label='Training loss')
+plt.plot(valid_losses, label='Validation loss')
+plt.title('Training and Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+# Evaluate the model on the validation dataset
+resnet50.eval()
+with torch.no_grad():
+    for images, labels in valid_loader:
+        images, labels = images.to(device), labels.to(device)
+        outputs = resnet50(images)
+        _, preds = torch.max(outputs, 1)
+        evaluate_model_performance(preds, labels)
+        break
+    
+# predict the labels for 10 of the test images with the accuracy of prediction. create a function to visualize the predictions
+
+for image in test_images[:10]:
+    predict_and_visualize(os.path.join(test_dir, 'test', image), resnet50, class_names, device)
+
 
     
     
