@@ -14,7 +14,7 @@ from torchvision import datasets, transforms
 from torchvision.utils import make_grid
 from sklearn.metrics import precision_score, recall_score, f1_score#
 from tqdm import tqdm
-from torchsummary import summary
+# from torchsummary import summary
 
 # Set the random seed for reproducibility
 torch.manual_seed(10)
@@ -40,8 +40,8 @@ plt.rcParams.update(
 )
 
 
-# with ZipFile('../../data/raw/archive.zip', 'r') as zip_ref:
-#     zip_ref.extractall('../../data/raw')
+with ZipFile('../../new-plant-diseases-dataset.zip', 'r') as zip_ref:
+    zip_ref.extractall('../../data/raw')
 
 print(os.listdir('../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/train'))
 
@@ -168,8 +168,8 @@ class SimpleCNN(nn.Module):
 model = SimpleCNN(in_channels=3, num_classes=len(train_data.classes)).to(device)
 print(model)
 
-# visualize the model architecture
-print(summary(model, (3, 224, 224)))
+# # visualize the model architecture
+# print(summary(model, (3, 224, 224)))
 # model = SimpleCNN(in_channels=3, num_classes=len(train_data.dataset.classes)).to(device)
 # print(model)
 
@@ -213,53 +213,121 @@ class EarlyStopping:
 n_epochs = 50
 early_stopping = EarlyStopping(patience=3, min_delta=0.01)
 
-train_losses = []
-valid_losses = []
+def train(model, train_loader, valid_loader, criterion, optimizer, n_epochs, device):
+    """
+    Trains a PyTorch model and evaluates it at the end of each epoch.
 
-# train the model
-for epoch in range(n_epochs):
-    print(f'Epoch {epoch + 1}\n-------------------------------')
-    model.train()
-    train_loss = 0.0
-    valid_loss = 0.0
-    for images, labels in tqdm(train_loader):
-        images, labels = images.to(device), labels.to(device)
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item() * images.size(0)
-    train_loss = train_loss / len(train_loader.dataset)
-    train_losses.append(train_loss)
-    print(f'Training Loss: {train_loss}')
-    
-    model.eval()
-    with torch.no_grad():
-        for images, labels in valid_loader:
+    Parameters:
+    - model: The PyTorch model to train.
+    - train_loader: The PyTorch DataLoader for the training dataset.
+    - valid_loader: The PyTorch DataLoader for the validation dataset.
+    - criterion: The loss function to use.
+    - optimizer: The optimizer to use for training the model.
+    - n_epochs: The number of epochs to train the model.
+    - device: The PyTorch device to use for training.
+
+    Returns:
+    - losses: A tuple of two lists containing the training and validation losses.
+    """
+    train_losses = []
+    valid_losses = []
+
+    for epoch in range(n_epochs):
+        print(f'Epoch {epoch + 1}\n-------------------------------')
+        model.train()
+        train_loss = 0.0
+        valid_loss = 0.0
+        for images, labels in tqdm(train_loader):
             images, labels = images.to(device), labels.to(device)
+            optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
-            valid_loss += loss.item() * images.size(0)
-        valid_loss = valid_loss / len(valid_loader.dataset)
-        valid_losses.append(valid_loss)
-        print(f'Validation Loss: {valid_loss}')
-        early_stopping(valid_loss)
-        if early_stopping.early_stop:
-            print("Early stopping")
-            break
-    sceduler.step()
-    
-print('Finished Training')
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item() * images.size(0)
+        train_loss = train_loss / len(train_loader.dataset)
+        train_losses.append(train_loss)
+        print(f'Training Loss: {train_loss}')
 
-# plot the training and validation loss
-plt.plot(train_losses, label='Training loss')
-plt.plot(valid_losses, label='Validation loss')
-plt.title('Training and Validation Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
+        model.eval()
+        with torch.no_grad():
+            for images, labels in valid_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                valid_loss += loss.item() * images.size(0)
+            valid_loss = valid_loss / len(valid_loader.dataset)
+            valid_losses.append(valid_loss)
+            print(f'Validation Loss: {valid_loss}')
+            early_stopping(valid_loss)
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
+        scheduler.step()
+
+    print('Finished Training')
+    return train_losses, valid_losses
+
+# train the model
+losses = train(model, train_loader, valid_loader, criterion, optimizer, n_epochs, device)
+
+# PLotting the losses
+plt.figure(figsize=(12, 6))
+plt.plot(losses[0], label="Train Loss")
+plt.plot(losses[1], label="Val Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Training and Validation Loss")
 plt.legend()
 plt.show()
+
+# train_losses = []
+# valid_losses = []
+
+# # train the model
+# for epoch in range(n_epochs):
+#     print(f'Epoch {epoch + 1}\n-------------------------------')
+#     model.train()
+#     train_loss = 0.0
+#     valid_loss = 0.0
+#     for images, labels in tqdm(train_loader):
+#         images, labels = images.to(device), labels.to(device)
+#         optimizer.zero_grad()
+#         outputs = model(images)
+#         loss = criterion(outputs, labels)
+#         loss.backward()
+#         optimizer.step()
+#         train_loss += loss.item() * images.size(0)
+#     train_loss = train_loss / len(train_loader.dataset)
+#     train_losses.append(train_loss)
+#     print(f'Training Loss: {train_loss}')
+    
+#     model.eval()
+#     with torch.no_grad():
+#         for images, labels in valid_loader:
+#             images, labels = images.to(device), labels.to(device)
+#             outputs = model(images)
+#             loss = criterion(outputs, labels)
+#             valid_loss += loss.item() * images.size(0)
+#         valid_loss = valid_loss / len(valid_loader.dataset)
+#         valid_losses.append(valid_loss)
+#         print(f'Validation Loss: {valid_loss}')
+#         early_stopping(valid_loss)
+#         if early_stopping.early_stop:
+#             print("Early stopping")
+#             break
+#     sceduler.step()
+    
+# print('Finished Training')
+
+# # plot the training and validation loss
+# plt.plot(train_losses, label='Training loss')
+# plt.plot(valid_losses, label='Validation loss')
+# plt.title('Training and Validation Loss')
+# plt.xlabel('Epoch')
+# plt.ylabel('Loss')
+# plt.legend()
+# plt.show()
 
 
 # create a helper function to evaluate the model performance

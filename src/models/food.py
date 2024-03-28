@@ -26,7 +26,7 @@ np.random.seed(100)
 # !echo '{"username":"kaggle_username","key":"kaggle_key"}' > ~/.kaggle/kaggle.json
 # !chmod 600 ~/.kaggle/kaggle.json
 # !kaggle datasets download -d kmader/food41
-{"username":"michaelajaoolarinoye","key":"bfd2e06a6264c3ea8c1951de478ab648"}
+# {"username":"michaelajaoolarinoye","key":"bfd2e06a6264c3ea8c1951de478ab648"}
 # !unzip food41.zip -d ../../data/raw
 
 
