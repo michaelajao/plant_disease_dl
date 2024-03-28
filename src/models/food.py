@@ -10,7 +10,6 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 from PIL import Image
 
-import kaggle
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -29,6 +28,8 @@ np.random.seed(100)
 # {"username":"michaelajaoolarinoye","key":"bfd2e06a6264c3ea8c1951de478ab648"}
 # !unzip food41.zip -d ../../data/raw
 
+# install cv2
+# !pip install opencv-python
 
 
 
