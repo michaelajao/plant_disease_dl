@@ -21,20 +21,21 @@ if torch.cuda.is_available():
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Matplotlib configurations for better visualization aesthetics
-plt.rcParams.update({
-    "lines.linewidth": 2,
-    "font.family": "serif",
-    "axes.titlesize": 20,
-    "axes.labelsize": 14,
-    "figure.figsize": [15, 8],
-    "figure.autolayout": True,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.grid": True,
-    "grid.color": "0.75",
-    "legend.fontsize": "medium",
-})
-
+plt.rcParams.update(
+    {
+        "lines.linewidth": 2,
+        "font.family": "serif",
+        "axes.titlesize": 20,
+        "axes.labelsize": 14,
+        "figure.figsize": [15, 8],
+        "figure.autolayout": True,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.color": "0.75",
+        "legend.fontsize": "medium",
+    }
+)
 
 
 print(
@@ -136,13 +137,13 @@ class CustomCNN(nn.Module):
         self.features = self._make_layers(num_layers, hidden_units)
         in_features = hidden_units[-1] * (224 // 2**num_layers) ** 2
         self.classifier = nn.Linear(in_features, num_classes)
-        
+
     def forward(self, x):
         x = self.features(x)
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
-    
+
     def _make_layers(self, num_layers, hidden_units):
         layers = []
         in_channels = 3
@@ -156,14 +157,18 @@ class CustomCNN(nn.Module):
             in_channels = hidden_units[i]
         return nn.Sequential(*layers)
 
+
 # Model instantiation
 num_classes = len(train_data.classes)
-model = CustomCNN(num_layers=3, hidden_units=[32, 64, 128], num_classes=num_classes).to(device)
+model = CustomCNN(num_layers=3, hidden_units=[32, 64, 128], num_classes=num_classes).to(
+    device
+)
 
 # Loss and optimizer
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+
 
 # Early stopping
 class EarlyStopping:
@@ -173,7 +178,7 @@ class EarlyStopping:
         self.counter = 0
         self.best_loss = None
         self.early_stop = False
-    
+
     def __call__(self, val_loss):
         if self.best_loss is None:
             self.best_loss = val_loss
@@ -184,10 +189,14 @@ class EarlyStopping:
         else:
             self.best_loss = val_loss
             self.counter = 0
-            
+
+
 # Training loop
 
-def train(model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs, device):
+
+def train(
+    model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs, device
+):
     early_stopping = EarlyStopping(patience=5, min_delta=0.01)
     for epoch in range(n_epochs):
         model.train()
@@ -200,7 +209,7 @@ def train(model, train_loader, valid_loader, criterion, optimizer, scheduler, n_
             loss.backward()
             optimizer.step()
             train_loss += loss.item() * images.size(0)
-        
+
         train_loss /= len(train_loader.dataset)
 
         model.eval()
@@ -211,21 +220,34 @@ def train(model, train_loader, valid_loader, criterion, optimizer, scheduler, n_
                 outputs = model(images)
                 loss = criterion(outputs, labels)
                 valid_loss += loss.item() * images.size(0)
-        
+
         valid_loss /= len(valid_loader.dataset)
-        
-        print(f"Epoch {epoch+1}, Training Loss: {train_loss:.4f}, Validation Loss: {valid_loss:.4f}")
+
+        print(
+            f"Epoch {epoch+1}, Training Loss: {train_loss:.4f}, Validation Loss: {valid_loss:.4f}"
+        )
 
         early_stopping(valid_loss)
         if early_stopping.early_stop:
             print("Early stopping triggered")
             break
-        
+
         scheduler.step()
-        
+
     return model
 
-model = train(model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs=50, device=device)
+
+model = train(
+    model,
+    train_loader,
+    valid_loader,
+    criterion,
+    optimizer,
+    scheduler,
+    n_epochs=50,
+    device=device,
+)
+
 
 # Visualize training and validation loss
 def get_losses(model, train_loader, valid_loader, criterion, device):
@@ -237,18 +259,18 @@ def get_losses(model, train_loader, valid_loader, criterion, device):
         loss = criterion(outputs, labels)
         train_loss += loss.item() * images.size(0)
     train_loss /= len(train_loader.dataset)
-    
+
     for images, labels in valid_loader:
         images, labels = images.to(device), labels.to(device)
         outputs = model(images)
         loss = criterion(outputs, labels)
         valid_loss += loss.item() * images.size(0)
     valid_loss /= len(valid_loader.dataset)
-    
+
     return train_loss, valid_loss
 
-losses = get_losses(model, train_loader, valid_loader, criterion, device)
 
+losses = get_losses(model, train_loader, valid_loader, criterion, device)
 
 
 plt.figure(figsize=(12, 6))
@@ -271,44 +293,55 @@ def evaluate_model_performance(model, data_loader, device):
             _, preds = torch.max(outputs, 1)
             all_preds.extend(preds.view(-1).cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
-    
+
     accuracy = accuracy_score(all_labels, all_preds)
-    precision = precision_score(all_labels, all_preds, average='macro')
-    recall = recall_score(all_labels, all_preds, average='macro')
-    f1 = f1_score(all_labels, all_preds, average='macro')
-    print(f'Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}')
-    
-    
+    precision = precision_score(all_labels, all_preds, average="macro")
+    recall = recall_score(all_labels, all_preds, average="macro")
+    f1 = f1_score(all_labels, all_preds, average="macro")
+    print(
+        f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}"
+    )
+
+
 evaluate_model_performance(model, valid_loader, device)
+
 
 def predict_and_visualize(image_path, model, class_names, device):
     model.eval()
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-    
-    image = Image.open(image_path).convert('RGB')
+    transform = transforms.Compose(
+        [
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+
+    image = Image.open(image_path).convert("RGB")
     image_tensor = transform(image).unsqueeze(0).to(device)
-    
+
     with torch.no_grad():
         outputs = model(image_tensor)
         _, predicted = torch.max(outputs, 1)
         probabilities = F.softmax(outputs, dim=1)
-    
+
     plt.imshow(image)
-    plt.title(f'Predicted: {class_names[predicted.item()]} ({probabilities.max().item()*100:.2f}%)')
-    plt.axis('off')
+    plt.title(
+        f"Predicted: {class_names[predicted.item()]} ({probabilities.max().item()*100:.2f}%)"
+    )
+    plt.axis("off")
     plt.show()
+
 
 class_names = train_data.classes
 for image in os.listdir(os.path.join(data_path, "valid", "Tomato___Late_blight"))[:10]:
-    predict_and_visualize(os.path.join(data_path, "valid", "Tomato___Late_blight", image), model, class_names, device)
-    
+    predict_and_visualize(
+        os.path.join(data_path, "valid", "Tomato___Late_blight", image),
+        model,
+        class_names,
+        device,
+    )
+
 # torch.save(model.state_dict(), "../../models/plant_disease_model.pth")
-
-
 
 
 model.eval()
