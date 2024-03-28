@@ -10,12 +10,28 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 from PIL import Image
 
-
+import kaggle
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
 print("PyTorch version:", torch.__version__)
+
+torch.manual_seed(100)
+np.random.seed(100)
+
+# downloading the data from kaggle using the kaggle api environment variable
+# !pip install kaggle
+# !mkdir ~/.kaggle
+# !echo '{"username":"kaggle_username","key":"kaggle_key"}' > ~/.kaggle/kaggle.json
+# !chmod 600 ~/.kaggle/kaggle.json
+# !kaggle datasets download -d kmader/food41
+{"username":"michaelajaoolarinoye","key":"bfd2e06a6264c3ea8c1951de478ab648"}
+# !unzip food41.zip -d ../../data/raw
+
+
+
+
 # print using GPU if available and how many
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -138,7 +154,9 @@ model = CustomCNN(num_layers, hidden_units, num_classes)
 
 # Define loss function and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+
+# optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # from tqdm import tqdm
 # from sklearn.metrics import confusion_matrix, accuracy_score
@@ -236,8 +254,18 @@ def train(model, train_loader, val_loader, criterion, optimizer, epochs=10, pati
 
 
 # Train the model
-num_epochs = 20
+num_epochs = 100
 losses = train(model, train_loader, val_loader, criterion, optimizer, epochs=num_epochs)
+
+# PLotting the losses
+plt.figure(figsize=(12, 6))
+plt.plot(losses[0], label="Train Loss")
+plt.plot(losses[1], label="Val Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Training and Validation Loss")
+plt.legend()
+plt.show()
 
 def plot_losses(train_losses, val_losses):
     plt.figure(figsize=(12, 6))
