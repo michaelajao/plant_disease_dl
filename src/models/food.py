@@ -150,19 +150,13 @@ class CustomCNN(nn.Module):
 num_layers = 3
 hidden_units = [32, 64, 128]  # Number of channels for each layer
 num_classes = 2  # Adjust based on your dataset
-model = CustomCNN(num_layers, hidden_units, num_classes)
+model = CustomCNN(num_layers, hidden_units, num_classes).to(device)
 
 # Define loss function and optimizer
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 
 # optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-# from tqdm import tqdm
-# from sklearn.metrics import confusion_matrix, accuracy_score
-import seaborn as sns
-from tqdm import tqdm
-import numpy as np
 
 # def train(model, train_loader, val_loader, criterion, optimizer, epochs=10):
 #     losses = [[], []]
