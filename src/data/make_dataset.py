@@ -116,19 +116,18 @@ print(
     f"Total number of images available for training: {disease_count.no_of_images.sum()}"
 )
 
-transform = transforms.Compose([transforms.Resize((224, 224)),transforms.ToTensor(),
-                                transforms.Grayscale(num_output_channels=),
-                                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+transform = transforms.Compose(
+    [
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        # transforms.Grayscale(num_output_channels=3),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+)
 
 # create a dataset
-train_data = datasets.ImageFolder(
-    train_dir,
-    transform=transform
-)
-valid_data = datasets.ImageFolder(
-    valid_dir,
-    transform=transform
-)
+train_data = datasets.ImageFolder(train_dir, transform=transform)
+valid_data = datasets.ImageFolder(valid_dir, transform=transform)
 # check the number of classes
 print(f"Number of classes: {len(train_data.classes)}")
 
@@ -168,45 +167,45 @@ print(f"Using {device} device for training.")
 
 
 # create a simple CNN model
-class SimpleCNN(nn.Module):
-    def __init__(self, in_channels, num_classes):
-        super(SimpleCNN, self).__init__()
-        self.conv1 = nn.Conv2d(
-            in_channels=in_channels, out_channels=8, kernel_size=3, stride=1, padding=1
-        )
-        self.bn1 = nn.BatchNorm2d(num_features=8)
-        self.conv2 = nn.Conv2d(
-            in_channels=8, out_channels=16, kernel_size=3, stride=1, padding=1
-        )
-        self.bn2 = nn.BatchNorm2d(num_features=16)
-        self.conv3 = nn.Conv2d(
-            in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1
-        )
-        self.bn3 = nn.BatchNorm2d(num_features=32)
-        self.conv4 = nn.Conv2d(
-            in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1
-        )
-        self.bn4 = nn.BatchNorm2d(num_features=64)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        # Assuming the input size is 224x224, adjust the linear layer size accordingly
-        self.fc1 = nn.Linear(64 * 14 * 14, num_classes)
-        self.dropout = nn.Dropout(0.5)
+# class SimpleCNN(nn.Module):
+#     def __init__(self, in_channels, num_classes):
+#         super(SimpleCNN, self).__init__()
+#         self.conv1 = nn.Conv2d(
+#             in_channels=in_channels, out_channels=8, kernel_size=3, stride=1, padding=1
+#         )
+#         self.bn1 = nn.BatchNorm2d(num_features=8)
+#         self.conv2 = nn.Conv2d(
+#             in_channels=8, out_channels=16, kernel_size=3, stride=1, padding=1
+#         )
+#         self.bn2 = nn.BatchNorm2d(num_features=16)
+#         self.conv3 = nn.Conv2d(
+#             in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1
+#         )
+#         self.bn3 = nn.BatchNorm2d(num_features=32)
+#         self.conv4 = nn.Conv2d(
+#             in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1
+#         )
+#         self.bn4 = nn.BatchNorm2d(num_features=64)
+#         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+#         # Assuming the input size is 224x224, adjust the linear layer size accordingly
+#         self.fc1 = nn.Linear(64 * 14 * 14, num_classes)
+#         self.dropout = nn.Dropout(0.5)
 
-    def forward(self, x):
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))
-        x = self.pool(F.relu(self.bn3(self.conv3(x))))
-        x = self.pool(F.relu(self.bn4(self.conv4(x))))
-        # Flatten the output for the fully connected layer
-        x = x.view(x.size(0), -1)
-        x = self.dropout(x)
-        x = self.fc1(x)
-        return x
+#     def forward(self, x):
+#         x = self.pool(F.relu(self.bn1(self.conv1(x))))
+#         x = self.pool(F.relu(self.bn2(self.conv2(x))))
+#         x = self.pool(F.relu(self.bn3(self.conv3(x))))
+#         x = self.pool(F.relu(self.bn4(self.conv4(x))))
+#         # Flatten the output for the fully connected layer
+#         x = x.view(x.size(0), -1)
+#         x = self.dropout(x)
+#         x = self.fc1(x)
+#         return x
 
 
-# create a model instance
-model = SimpleCNN(in_channels=3, num_classes=len(train_data.classes)).to(device)
-print(model)
+# # create a model instance
+# model = SimpleCNN(in_channels=3, num_classes=len(train_data.classes)).to(device)
+# print(model)
 
 # create a learning rate scheduler
 
@@ -248,7 +247,7 @@ model = CustomCNN(num_layers, hidden_units, num_classes).to(device)
 # define the loss function and optimizer
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
-sceduler = optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
 
 
 # Implement early stopping mechanism
@@ -280,7 +279,7 @@ class EarlyStopping:
 
 
 n_epochs = 50
-early_stopping = EarlyStopping(patience=3, min_delta=0.01)
+early_stopping = EarlyStopping(patience=5, min_delta=0.01)
 
 
 def train(model, train_loader, valid_loader, criterion, optimizer, n_epochs, device):
