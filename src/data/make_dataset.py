@@ -12,17 +12,21 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 from torchvision.utils import make_grid
-from sklearn.metrics import precision_score, recall_score, f1_score#
+from sklearn.metrics import precision_score, recall_score, f1_score  #
 from tqdm import tqdm
+
 # from torchsummary import summary
 
 # Set the random seed for reproducibility
 torch.manual_seed(10)
+if torch.cuda.is_available():
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-
-
+# Device setup for CUDA or CPU
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Set the style of the plots
-plt.style.use("seaborn-v0_8-white")
+# plt.style.use("seaborn-v0_8-white")
 plt.rcParams.update(
     {
         "lines.linewidth": 2,
@@ -40,25 +44,35 @@ plt.rcParams.update(
 )
 
 
-with ZipFile('../../new-plant-diseases-dataset.zip', 'r') as zip_ref:
-    zip_ref.extractall('../../data/raw')
+# with ZipFile('../../new-plant-diseases-dataset.zip', 'r') as zip_ref:
+#     zip_ref.extractall('../../data/raw')
 
-print(os.listdir('../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/train'))
+print(
+    os.listdir(
+        "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/train"
+    )
+)
 
 
-print(len(os.listdir('../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/train')))
+print(
+    len(
+        os.listdir(
+            "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/train"
+        )
+    )
+)
 
-data_path = '../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)'
+data_path = "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)"
 
-train_dir = os.path.join(data_path, 'train')
-valid_dir = os.path.join(data_path, 'valid')
+train_dir = os.path.join(data_path, "train")
+valid_dir = os.path.join(data_path, "valid")
 
 diseases = os.listdir(train_dir)
 
-# extract the unique plant names 
+# extract the unique plant names
 plant_names = []
 for disease in diseases:
-    plant = disease.split('___')[0]
+    plant = disease.split("___")[0]
     if plant not in plant_names:
         plant_names.append(plant)
 
@@ -66,12 +80,12 @@ for disease in diseases:
 # extract the unique disease names
 disease_names = []
 for disease in diseases:
-    disease = disease.split('___')[1]
+    disease = disease.split("___")[1]
     if disease not in disease_names:
         disease_names.append(disease)
-        
-print(f'Number of unique plants: {len(plant_names)}')
-print(f'Number of unique diseases: {len(disease_names)}')
+
+print(f"Number of unique plants: {len(plant_names)}")
+print(f"Number of unique diseases: {len(disease_names)}")
 
 
 # check the number of images for each disease
@@ -79,35 +93,50 @@ disease_count = {}
 for disease in diseases:
     if disease not in disease_count:
         disease_count[disease] = len(os.listdir(os.path.join(train_dir, disease)))
-        
+
 # convert to dataframe
-disease_count = pd.DataFrame(disease_count.values(), index=disease_count.keys(), columns=['no_of_images'])
+disease_count = pd.DataFrame(
+    disease_count.values(), index=disease_count.keys(), columns=["no_of_images"]
+)
 
 
 # plot the number of images for each disease
 
-disease_count.sort_values(by='no_of_images', ascending=False).plot(kind='bar', figsize=(15, 8), color='skyblue')
-plt.title('Number of images for each disease')
-plt.xlabel('Disease')
-plt.ylabel('Number of images')
+disease_count.sort_values(by="no_of_images", ascending=False).plot(
+    kind="bar", figsize=(15, 8), color="skyblue"
+)
+plt.title("Number of images for each disease")
+plt.xlabel("Disease")
+plt.ylabel("Number of images")
 plt.show()
 
 
 # number of images available for training
-print(f'Total number of images available for training: {disease_count.no_of_images.sum()}')
+print(
+    f"Total number of images available for training: {disease_count.no_of_images.sum()}"
+)
 
-# Dataset preparation for training
-# create a dataset object
-train_data = datasets.ImageFolder(train_dir, transform=transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor()]))
-valid_data = datasets.ImageFolder(valid_dir, transform=transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor()]))
+transform = transforms.Compose([transforms.Resize((224, 224)),transforms.ToTensor(),
+                                transforms.Grayscale(num_output_channels=),
+                                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+
+# create a dataset
+train_data = datasets.ImageFolder(
+    train_dir,
+    transform=transform
+)
+valid_data = datasets.ImageFolder(
+    valid_dir,
+    transform=transform
+)
 # check the number of classes
-print(f'Number of classes: {len(train_data.classes)}')
+print(f"Number of classes: {len(train_data.classes)}")
 
-#check the shape and vislualize one of the image in the training dataset with the label in text
+# check the shape and vislualize one of the image in the training dataset with the label in text
 image, label = train_data[200]
-print(f'Image shape: {image.shape}')
-print(f'Label: {label}')    
-# visualize the image   
+print(f"Image shape: {image.shape}")
+print(f"Label: {label}")
+# visualize the image
 plt.imshow(image.permute(1, 2, 0))
 plt.title(train_data.classes[label])
 plt.show()
@@ -124,28 +153,39 @@ valid_loader = DataLoader(valid_data, batch_size=32)
 def show_batch(dl):
     for images, labels in dl:
         fig, ax = plt.subplots(figsize=(20, 20))
-        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_xticks([])
+        ax.set_yticks([])
         ax.imshow(make_grid(images, nrow=8).permute(1, 2, 0))
         break
-    
+
+
 show_batch(train_loader)
 
 
 # Modelling - lets start with using 1000 images from the training dataset to train a simple CNN model using the GPU
 # check if a GPU is available
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f'Using {device} device for training.')
+print(f"Using {device} device for training.")
+
+
 # create a simple CNN model
 class SimpleCNN(nn.Module):
     def __init__(self, in_channels, num_classes):
         super(SimpleCNN, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=8, kernel_size=3, stride=1, padding=1)
+        self.conv1 = nn.Conv2d(
+            in_channels=in_channels, out_channels=8, kernel_size=3, stride=1, padding=1
+        )
         self.bn1 = nn.BatchNorm2d(num_features=8)
-        self.conv2 = nn.Conv2d(in_channels=8, out_channels=16, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(
+            in_channels=8, out_channels=16, kernel_size=3, stride=1, padding=1
+        )
         self.bn2 = nn.BatchNorm2d(num_features=16)
-        self.conv3 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(
+            in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1
+        )
         self.bn3 = nn.BatchNorm2d(num_features=32)
-        self.conv4 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(
+            in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1
+        )
         self.bn4 = nn.BatchNorm2d(num_features=64)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
         # Assuming the input size is 224x224, adjust the linear layer size accordingly
@@ -168,17 +208,45 @@ class SimpleCNN(nn.Module):
 model = SimpleCNN(in_channels=3, num_classes=len(train_data.classes)).to(device)
 print(model)
 
-# # visualize the model architecture
-# print(summary(model, (3, 224, 224)))
-# model = SimpleCNN(in_channels=3, num_classes=len(train_data.dataset.classes)).to(device)
-# print(model)
+# create a learning rate scheduler
+
+
+class CustomCNN(nn.Module):
+    def __init__(self, num_layers, hidden_units, num_classes=10):
+        super(CustomCNN, self).__init__()
+        layers = []
+        in_channels = 3  # Assuming input images are RGB
+
+        for i in range(num_layers):
+            out_channels = hidden_units[i]
+            layers += [
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+            ]
+            in_channels = out_channels
+
+        self.features = nn.Sequential(*layers)
+        self.classifier = nn.Linear(
+            in_channels * (224 // 2**num_layers) ** 2, num_classes
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+
+num_layers = 3
+hidden_units = [32, 64, 128]  # Number of channels for each layer
+num_classes = len(train_data.classes)  # Adjust based on your dataset
+model = CustomCNN(num_layers, hidden_units, num_classes).to(device)
+
 
 # define the loss function and optimizer
 criterion = nn.CrossEntropyLoss()
-
-#create a learning rate scheduler
-
-
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 sceduler = optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
 
@@ -210,8 +278,10 @@ class EarlyStopping:
             self.best_loss = val_loss
             self.counter = 0
 
+
 n_epochs = 50
 early_stopping = EarlyStopping(patience=3, min_delta=0.01)
+
 
 def train(model, train_loader, valid_loader, criterion, optimizer, n_epochs, device):
     """
@@ -233,7 +303,7 @@ def train(model, train_loader, valid_loader, criterion, optimizer, n_epochs, dev
     valid_losses = []
 
     for epoch in range(n_epochs):
-        print(f'Epoch {epoch + 1}\n-------------------------------')
+        print(f"Epoch {epoch + 1}\n-------------------------------")
         model.train()
         train_loss = 0.0
         valid_loss = 0.0
@@ -247,7 +317,7 @@ def train(model, train_loader, valid_loader, criterion, optimizer, n_epochs, dev
             train_loss += loss.item() * images.size(0)
         train_loss = train_loss / len(train_loader.dataset)
         train_losses.append(train_loss)
-        print(f'Training Loss: {train_loss}')
+        print(f"Training Loss: {train_loss}")
 
         model.eval()
         with torch.no_grad():
@@ -258,18 +328,21 @@ def train(model, train_loader, valid_loader, criterion, optimizer, n_epochs, dev
                 valid_loss += loss.item() * images.size(0)
             valid_loss = valid_loss / len(valid_loader.dataset)
             valid_losses.append(valid_loss)
-            print(f'Validation Loss: {valid_loss}')
+            print(f"Validation Loss: {valid_loss}")
             early_stopping(valid_loss)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
         scheduler.step()
 
-    print('Finished Training')
+    print("Finished Training")
     return train_losses, valid_losses
 
+
 # train the model
-losses = train(model, train_loader, valid_loader, criterion, optimizer, n_epochs, device)
+losses = train(
+    model, train_loader, valid_loader, criterion, optimizer, n_epochs, device
+)
 
 # PLotting the losses
 plt.figure(figsize=(12, 6))
@@ -301,7 +374,7 @@ plt.show()
 #     train_loss = train_loss / len(train_loader.dataset)
 #     train_losses.append(train_loss)
 #     print(f'Training Loss: {train_loss}')
-    
+
 #     model.eval()
 #     with torch.no_grad():
 #         for images, labels in valid_loader:
@@ -317,7 +390,7 @@ plt.show()
 #             print("Early stopping")
 #             break
 #     sceduler.step()
-    
+
 # print('Finished Training')
 
 # # plot the training and validation loss
@@ -332,11 +405,12 @@ plt.show()
 
 # create a helper function to evaluate the model performance
 
+
 def evaluate_model_performance(preds, labels):
     """
     Evaluates and prints the model's performance metrics including accuracy,
     precision, recall, and F1 score.
-    
+
     Parameters:
     - preds: The predicted labels (as a PyTorch tensor).
     - labels: The true labels (as a PyTorch tensor).
@@ -353,17 +427,17 @@ def evaluate_model_performance(preds, labels):
     labels_np = labels.numpy()
 
     # Calculate precision, recall, and F1 score
-    precision = precision_score(labels_np, preds_np, average='macro')
-    recall = recall_score(labels_np, preds_np, average='macro')
-    f1 = f1_score(labels_np, preds_np, average='macro')
+    precision = precision_score(labels_np, preds_np, average="macro")
+    recall = recall_score(labels_np, preds_np, average="macro")
+    f1 = f1_score(labels_np, preds_np, average="macro")
 
     # Print metrics
-    print(f'Predicted labels: {preds}')
-    print(f'Actual labels: {labels}')
-    print(f'Accuracy: {accuracy}')
-    print(f'Precision: {precision}')
-    print(f'Recall: {recall}')
-    print(f'F1 Score: {f1}')
+    print(f"Predicted labels: {preds}")
+    print(f"Actual labels: {labels}")
+    print(f"Accuracy: {accuracy}")
+    print(f"Precision: {precision}")
+    print(f"Recall: {recall}")
+    print(f"F1 Score: {f1}")
 
 
 # evaluate the model on the validation dataset
@@ -375,13 +449,19 @@ with torch.no_grad():
         _, preds = torch.max(outputs, 1)
         evaluate_model_performance(preds, labels)
         break
-    
-    
-test_dir = "../../data/raw/test/"
-test = datasets.ImageFolder(test_dir, transform=transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor()]))
 
-test_images = os.listdir(os.path.join(test_dir, 'test'))
-print(f'Number of test images: {len(test_images)}')
+
+test_dir = "../../data/raw/test/"
+test = datasets.ImageFolder(
+    test_dir,
+    transform=transforms.Compose(
+        [transforms.Resize((224, 224)), transforms.ToTensor()]
+    ),
+)
+
+test_images = os.listdir(os.path.join(test_dir, "test"))
+print(f"Number of test images: {len(test_images)}")
+
 
 # predict the labels for 10 of the test images with the accuracy of prediction. create a function to visualize the predictions
 def predict_and_visualize(image_path, model, class_names, device):
@@ -395,37 +475,41 @@ def predict_and_visualize(image_path, model, class_names, device):
     - device: The torch device to use for computations.
     """
     # Transform for the input image
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor()
-    ])
-    
+    transform = transforms.Compose(
+        [transforms.Resize((224, 224)), transforms.ToTensor()]
+    )
+
     # Load and transform the image
-    image = Image.open(image_path).convert('RGB')
-    input_tensor = transform(image).unsqueeze(0).to(device)  # Add batch dimension and move to device
-    
+    image = Image.open(image_path).convert("RGB")
+    input_tensor = (
+        transform(image).unsqueeze(0).to(device)
+    )  # Add batch dimension and move to device
+
     # Predict
     model.eval()
     with torch.no_grad():
         outputs = model(input_tensor)
         probabilities = torch.nn.functional.softmax(outputs, dim=1)
         top_prob, top_catid = torch.max(probabilities, dim=1)
-    
+
     # Visualize
     plt.imshow(image)
-    plt.title(f"Predicted: {class_names[top_catid.item()]} - {top_prob.item()*100:.2f}%")
-    plt.axis('off')
+    plt.title(
+        f"Predicted: {class_names[top_catid.item()]} - {top_prob.item()*100:.2f}%"
+    )
+    plt.axis("off")
     plt.show()
 
 
 class_names = train_data.classes
 for image in test_images[:10]:
-    predict_and_visualize(os.path.join(test_dir, 'test', image), model, class_names, device)          
-    
-    
-# save the model
-torch.save(model.state_dict(), '../../models/plant_disease_model.pth')  
+    predict_and_visualize(
+        os.path.join(test_dir, "test", image), model, class_names, device
+    )
 
+
+# save the model
+torch.save(model.state_dict(), "../../models/plant_disease_model.pth")
 
 
 import torchvision.models as models
@@ -444,7 +528,7 @@ resnet50 = models.resnet50(pretrained=True)
 # Freeze the model parameters
 for param in resnet50.parameters():
     param.requires_grad = False
-    
+
 # Replace the final fully connected layer
 num_ftrs = resnet50.fc.in_features
 resnet50.fc = nn.Linear(num_ftrs, len(train_data.classes))
@@ -466,7 +550,7 @@ valid_losses = []
 
 # Train the model
 for epoch in range(n_epochs):
-    print(f'Epoch {epoch + 1}\n-------------------------------')
+    print(f"Epoch {epoch + 1}\n-------------------------------")
     resnet50.train()
     train_loss = 0.0
     valid_loss = 0.0
@@ -480,8 +564,8 @@ for epoch in range(n_epochs):
         train_loss += loss.item() * images.size(0)
     train_loss = train_loss / len(train_loader.dataset)
     train_losses.append(train_loss)
-    print(f'Training Loss: {train_loss}')
-    
+    print(f"Training Loss: {train_loss}")
+
     resnet50.eval()
     with torch.no_grad():
         for images, labels in valid_loader:
@@ -491,21 +575,21 @@ for epoch in range(n_epochs):
             valid_loss += loss.item() * images.size(0)
         valid_loss = valid_loss / len(valid_loader.dataset)
         valid_losses.append(valid_loss)
-        print(f'Validation Loss: {valid_loss}')
+        print(f"Validation Loss: {valid_loss}")
         early_stopping(valid_loss)
         if early_stopping.early_stop:
             print("Early stopping")
             break
     sceduler.step()
-    
-print('Finished Training')
+
+print("Finished Training")
 
 # Plot the training and validation loss
-plt.plot(train_losses, label='Training loss')
-plt.plot(valid_losses, label='Validation loss')
-plt.title('Training and Validation Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
+plt.plot(train_losses, label="Training loss")
+plt.plot(valid_losses, label="Validation loss")
+plt.title("Training and Validation Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
 plt.legend()
 plt.show()
 
@@ -518,12 +602,10 @@ with torch.no_grad():
         _, preds = torch.max(outputs, 1)
         evaluate_model_performance(preds, labels)
         break
-    
+
 # predict the labels for 10 of the test images with the accuracy of prediction. create a function to visualize the predictions
 
 for image in test_images[:10]:
-    predict_and_visualize(os.path.join(test_dir, 'test', image), resnet50, class_names, device)
-
-
-    
-    
+    predict_and_visualize(
+        os.path.join(test_dir, "test", image), resnet50, class_names, device
+    )
