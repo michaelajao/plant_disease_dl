@@ -198,16 +198,18 @@ class EarlyStopping:
 
 
 # Training loop
-
-
 def train(
     model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs, device
 ):
     early_stopping = EarlyStopping(patience=5, min_delta=0.01)
+    train_losses = [[], []]
+    train_accuracies = [[], []]
     for epoch in range(n_epochs):
         print(f"Epoch {epoch + 1}\n-------------------------------")
         model.train()
         train_loss = 0.0
+        train_correct = 0
+        train_total = 0
         for images, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
             images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
@@ -216,22 +218,39 @@ def train(
             loss.backward()
             optimizer.step()
             train_loss += loss.item() * images.size(0)
+            _, predicted = torch.max(outputs.data, 1)
+            train_total += labels.size(0)
+            train_correct += (predicted == labels).sum().item()
 
         train_loss /= len(train_loader.dataset)
+        train_losses[0].append(train_loss)
+        train_accuracy = 100 * train_correct / train_total
+        train_accuracies[0].append(train_accuracy)
 
         model.eval()
         valid_loss = 0.0
+        valid_correct = 0
+        valid_total = 0
         with torch.no_grad():
             for images, labels in valid_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
                 loss = criterion(outputs, labels)
                 valid_loss += loss.item() * images.size(0)
+                _, predicted = torch.max(outputs.data, 1)
+                valid_total += labels.size(0)
+                valid_correct += (predicted == labels).sum().item()
 
         valid_loss /= len(valid_loader.dataset)
+        train_losses[1].append(valid_loss)
+        valid_accuracy = 100 * valid_correct / valid_total
+        train_accuracies[1].append(valid_accuracy)
 
         print(
             f"Epoch {epoch+1}, Training Loss: {train_loss:.4f}, Validation Loss: {valid_loss:.4f}"
+        )
+        print(
+            f"Epoch {epoch+1}, Training Accuracy: {train_accuracy:.2f}%, Validation Accuracy: {valid_accuracy:.2f}%"
         )
 
         early_stopping(valid_loss)
@@ -241,51 +260,29 @@ def train(
 
         scheduler.step()
 
-    return model
+    return model, train_losses, train_accuracies
 
 
-model = train(
-    model,
-    train_loader,
-    valid_loader,
-    criterion,
-    optimizer,
-    scheduler,
-    n_epochs=50,
-    device=device,
+model, losses, accuracies = train(
+    model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs=50, device=device
 )
 
-
-# Visualize training and validation loss
-def get_losses(model, train_loader, valid_loader, criterion, device):
-    train_loss = 0.0
-    valid_loss
-    for images, labels in train_loader:
-        images, labels = images.to(device), labels.to(device)
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        train_loss += loss.item() * images.size(0)
-    train_loss /= len(train_loader.dataset)
-
-    for images, labels in valid_loader:
-        images, labels = images.to(device), labels.to(device)
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        valid_loss += loss.item() * images.size(0)
-    valid_loss /= len(valid_loader.dataset)
-
-    return train_loss, valid_loss
-
-
-losses = get_losses(model, train_loader, valid_loader, criterion, device)
-
-
-plt.figure(figsize=(12, 6))
-plt.plot(losses[0], label="Train Loss")
-plt.plot(losses[1], label="Val Loss")
+# Plotting training and validation losses and accuracies
+plt.figure(figsize=(15, 8))
+plt.subplot(1, 2, 1)
+plt.plot(losses[0], label="Training loss")
+plt.plot(losses[1], label="Validation loss")
+plt.title("Training and Validation Loss")
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
-plt.title("Training and Validation Loss")
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(accuracies[0], label="Training accuracy")
+plt.plot(accuracies[1], label="Validation accuracy")
+plt.title("Training and Validation Accuracy")
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy")
 plt.legend()
 plt.show()
 
@@ -311,172 +308,52 @@ def evaluate_model_performance(model, data_loader, device):
 
 
 evaluate_model_performance(model, valid_loader, device)
+    
+    
+    
+# Visualizing predictions make it a plot side by side with the probability of the prediction. make the plot good enough to be saved as an image for my research paper
+path_test = "../../data/raw/"
+test_data = datasets.ImageFolder(path_test, transform=transform)
 
+test_loader = DataLoader(test_data, batch_size=32)
 
-def predict_and_visualize(image_path, model, class_names, device):
-    model.eval()
-    transform = transforms.Compose(
-        [
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-
-    image = Image.open(image_path).convert("RGB")
-    image_tensor = transform(image).unsqueeze(0).to(device)
-
-    with torch.no_grad():
-        outputs = model(image_tensor)
-        _, predicted = torch.max(outputs, 1)
-        probabilities = F.softmax(outputs, dim=1)
-
-    plt.imshow(image)
-    plt.title(
-        f"Predicted: {class_names[predicted.item()]} ({probabilities.max().item()*100:.2f}%)"
-    )
-    plt.axis("off")
-    plt.show()
-
-
-class_names = train_data.classes
-for image in os.listdir(os.path.join(data_path, "valid", "Tomato___Late_blight"))[:10]:
-    predict_and_visualize(
-        os.path.join(data_path, "valid", "Tomato___Late_blight", image),
-        model,
-        class_names,
-        device,
-    )
-
-# torch.save(model.state_dict(), "../../models/plant_disease_model.pth")
-
-
-model.eval()
-with torch.no_grad():
-    for images, labels in valid_loader:
-        images, labels = images.to(device), labels.to(device)
-        outputs = model(images)
-        _, preds = torch.max(outputs, 1)
-        evaluate_model_performance(preds, labels)
-        break
-
-test_dir = "../../data/raw/test/"
-test = datasets.ImageFolder(
-    test_dir,
-    transform=transforms.Compose(
-        [transforms.Resize((224, 224)), transforms.ToTensor()]
-    ),
-)
-
-test_images = os.listdir(os.path.join(test_dir, "test"))
-print(f"Number of test images: {len(test_images)}")
-
-
-def predict_and_visualize(image_path, model, class_names, device):
-    transform = transforms.Compose(
-        [transforms.Resize((224, 224)), transforms.ToTensor()]
-    )
-
-    image = Image.open(image_path).convert("RGB")
-    input_tensor = transform(image).unsqueeze(0).to(device)
-
+def show_predictions(model, data_loader, device, class_names):
     model.eval()
     with torch.no_grad():
-        outputs = model(input_tensor)
-        probabilities = torch.nn.functional.softmax(outputs, dim=1)
-        top_prob, top_catid = torch.max(probabilities, dim=1)
+        for images, labels in data_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, preds = torch.max(outputs, 1)
+            probs = F.softmax(outputs, dim=1)
+            fig, axes = plt.subplots(2, 5, figsize=(25, 10))
+            for i, ax in enumerate(axes.flat):
+                ax.imshow(images[i].permute(1, 2, 0).cpu().numpy())
+                ax.axis("off")
+                pred_label = class_names[preds[i]]
+                pred_prob = probs[i][preds[i]] * 100
+                ax.set_title(f"Prediction: {pred_label}\nProbability: {pred_prob:.2f}%")
+            plt.show()
+            break
+        
+show_predictions(model, test_loader, device, train_data.classes)
 
-    plt.imshow(image)
-    plt.title(
-        f"Predicted: {class_names[top_catid.item()]} - {top_prob.item()*100:.2f}%"
-    )
-    plt.axis("off")
-    plt.show()
 
 
-class_names = train_data.classes
-for image in test_images[:10]:
-    predict_and_visualize(
-        os.path.join(test_dir, "test", image), model, class_names, device
-    )
-
+# Save the model
 torch.save(model.state_dict(), "../../models/plant_disease_model.pth")
 
-# import torchvision.models as models
+# make the model usable for inference in a mobile app
+scripted_model = torch.jit.script(model)
+scripted_model.save("../../models/plant_disease_model.pt")
 
-# resnet50 = models.resnet50(pretrained=True)
+# Save the class names
+import json
 
-# for param in resnet50.parameters():
-#     param.requires_grad = False
-
-# num_ftrs = resnet50.fc.in_features
-# resnet50.fc = nn.Linear(num_ftrs, len(train_data.classes))
-
-# resnet50 = resnet50.to(device)
-
-# criterion = nn.CrossEntropyLoss()
-# optimizer = optim.Adam(resnet50.parameters(), lr=0.001)
-# scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
-
-# n_epochs = 50
-# early_stopping = EarlyStopping(patience=3, min_delta=0.01)
-
-# train_losses = []
-# valid_losses = []
-
-# for epoch in range(n_epochs):
-#     print(f"Epoch {epoch + 1}\n-------------------------------")
-#     resnet50.train()
-#     train_loss = 0.0
-#     valid_loss = 0.0
-#     for images, labels in tqdm(train_loader):
-#         images, labels = images.to(device), labels.to(device)
-#         optimizer.zero_grad()
-#         outputs = resnet50(images)
-#         loss = criterion(outputs, labels)
-#         loss.backward()
-#         optimizer.step()
-#         train_loss += loss.item() * images.size(0)
-#     train_loss = train_loss / len(train_loader.dataset)
-#     train_losses.append(train_loss)
-#     print(f"Training Loss: {train_loss}")
-
-#     resnet50.eval()
-#     with torch.no_grad():
-#         for images, labels in valid_loader:
-#             images, labels = images.to(device), labels.to(device)
-#             outputs = resnet50(images)
-#             loss = criterion(outputs, labels)
-#             valid_loss += loss.item() * images.size(0)
-#         valid_loss = valid_loss / len(valid_loader.dataset)
-#         valid_losses.append(valid_loss)
-#         print(f"Validation Loss: {valid_loss}")
-#         early_stopping(valid_loss)
-#         if early_stopping.early_stop:
-#             print("Early stopping")
-#             break
-#     scheduler.step()
-
-# print("Finished Training")
-
-# plt.plot(train_losses, label="Training loss")
-# plt.plot(valid_losses, label="Validation loss")
-# plt.title("Training and Validation Loss")
-# plt.xlabel("Epoch")
-# plt.ylabel("Loss")
-# plt.legend()
-# plt.show()
-
-# resnet50.eval()
-# with torch.no_grad():
-#     for images, labels in valid_loader:
-#         images, labels = images.to(device), labels.to(device)
-#         outputs = resnet50(images)
-#         _, preds = torch.max(outputs, 1)
-#         evaluate_model_performance(preds, labels)
-#         break
-
-# for image in test_images[:10]:
-#     predict_and_visualize(
-#         os.path.join(test_dir, "test", image), resnet50, class_names, device
-#     )
+with open("../../models/class_names.json", "w") as f:
+    json.dump(class_names, f)
+    
+# Save the model and class names in a zip file
+with ZipFile("../../models/plant_disease_model.zip", "w") as z:
+    z.write("../../models/plant_disease_model.pt")
+    z.write("../../models/class_names.json")
+    
