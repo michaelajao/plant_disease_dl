@@ -11,6 +11,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
+from torchvision.utils import make_grid
 from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
 
 torch.manual_seed(10)
@@ -98,7 +99,11 @@ transform = transforms.Compose(
     [
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        # transforms.RandomRotation(degrees=45),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 )
 
@@ -120,15 +125,16 @@ valid_loader = DataLoader(valid_data, batch_size=32)
 
 def show_batch(dl):
     for images, labels in dl:
-        fig, ax = plt.subplots(figsize=(20, 20))
+        fig, ax = plt.subplots(figsize=(16, 8))
         ax.set_xticks([])
         ax.set_yticks([])
-        ax.imshow(make_grid(images, nrow=8).permute(1, 2, 0))
+        ax.imshow(
+            make_grid(images, nrow=8).permute(1, 2, 0).numpy(),
+            cmap="viridis",
+        )
         break
-
-
+    
 show_batch(train_loader)
-
 
 # Model definition
 class CustomCNN(nn.Module):
@@ -199,6 +205,7 @@ def train(
 ):
     early_stopping = EarlyStopping(patience=5, min_delta=0.01)
     for epoch in range(n_epochs):
+        print(f"Epoch {epoch + 1}\n-------------------------------")
         model.train()
         train_loss = 0.0
         for images, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
