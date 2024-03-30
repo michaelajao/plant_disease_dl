@@ -114,7 +114,7 @@ transform = transforms.Compose(
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 )
 
@@ -128,26 +128,39 @@ print(f"Image shape: {image.shape}")
 print(f"Label: {label}")
 plt.imshow(image.permute(1, 2, 0))
 plt.title(train_data.classes[label])
-plt.axis("off")
 plt.savefig("../../reports/figures/sample_image.png")
 plt.show()
 
 train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
-valid_loader = DataLoader(valid_data, batch_size=32)
+valid_loader = DataLoader(valid_data, batch_size=32, shuffle=False)
+
+# print the length of the train and valid loaders and the batchs of the train loader
+print(f"Number of batches in train loader: {len(train_loader)}")
+print(f"Number of batches in valid loader: {len(valid_loader)}")
+
+for images, labels in train_loader:
+    print(f"Image batch dimensions: {images.shape}")
+    print(f"Label batch dimensions: {labels.shape}")
+    break
+
+# show a batch of images with their labels
+def show_images(images, labels, ncols=6):
+    fig, axes = plt.subplots(
+        len(images) // ncols, ncols, figsize=(25, 20), sharex=True, sharey=True
+    )
+    for i, ax in enumerate(axes.flat):
+        image = images[i].permute(1, 2, 0).numpy()
+        ax.imshow(image)
+        ax.axis("off")
+        ax.set_title(train_data.classes[labels[i]])
+    plt.tight_layout()
+    plt.show()
+
+images, labels = next(iter(train_loader))
+show_images(images, labels)
 
 
-def show_batch(dl):
-    for images, labels in dl:
-        fig, ax = plt.subplots(figsize=(16, 8))
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.imshow(
-            make_grid(images, nrow=8).permute(1, 2, 0).numpy(),
-            cmap="viridis",
-        )
-        break
-    
-show_batch(train_loader)
+# show the model architecture
 
 # Model definition
 class CustomCNN(nn.Module):
@@ -179,7 +192,7 @@ class CustomCNN(nn.Module):
 
 # Model instantiation
 num_classes = len(train_data.classes)
-model = CustomCNN(num_layers=3, hidden_units=[32, 64, 128], num_classes=num_classes).to(
+model = CustomCNN(num_layers=5, hidden_units=[32, 64, 128, 256, 512], num_classes=num_classes).to(
     device
 )
 
@@ -326,6 +339,18 @@ evaluate_model_performance(model, valid_loader, device)
     
 # Visualizing predictions make it a plot side by side with the probability of the prediction. make the plot good enough to be saved as an image for my research paper
 path_test = "../../data/raw/"
+
+# test images transformation
+transform = transforms.Compose(
+    [
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        # transforms.Normalize(
+        #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+        # ),
+    ]
+)
+
 test_data = datasets.ImageFolder(path_test, transform=transform)
 
 test_loader = DataLoader(test_data, batch_size=32)

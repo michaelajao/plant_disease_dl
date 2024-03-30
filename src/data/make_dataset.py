@@ -7,6 +7,8 @@ import torch.nn as nn
 import torchvision.models as models
 import torch.optim as optim
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 
 data_path = "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)"
@@ -311,8 +313,9 @@ class EarlyStopping:
             self.counter = 0
 
 
-# Device configuration for training on GPU if available
+# Device configuration for training on GPU if available. two GPUs are available make use of both of them
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 # Model instantiation
 num_crop_types = len(plant_names)
@@ -322,85 +325,167 @@ model = MultiTaskCNN(num_crop_types, num_diseases).to(device)
 # Loss function and optimizer
 criterion = MultiTaskLoss().to(device)
 optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
-
-def train_model(
-    model,
-    criterion,
-    optimizer,
-    train_loader,
-    valid_loader,
-    early_stopping,
-    num_epochs=25,
+def train(
+    model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs, device
 ):
-    # Initialize lists to track per epoch losses
+    # Initialize lists to track per epoch losses and accuracies
     train_losses, val_losses = [], []
-
-    for epoch in range(num_epochs):
+    train_accuracies, val_accuracies = [], []
+    # Initialize the early stopping object
+    early_stopping = EarlyStopping(patience=5, min_delta=0.01)
+    for epoch in range(n_epochs):
+        print(f"Epoch {epoch + 1}\n-------------------------------")
         model.train()  # Set model to training mode
         running_loss = 0.0
-
+        correct = 0
+        total = 0
         # Training phase with tqdm progress bar
         with tqdm(train_loader, unit="batch") as train_epoch:
             for inputs, labels in train_epoch:
-                train_epoch.set_description(f"Epoch {epoch+1}/{num_epochs} [Train]")
-
+                train_epoch.set_description(f"Epoch {epoch+1}/{n_epochs} [Train]")
                 inputs = inputs.to(device)
                 labels = {task: labels[task].to(device) for task in labels}
-
                 optimizer.zero_grad()  # Zero the parameter gradients
-
                 outputs = model(inputs)  # Forward pass
                 loss = criterion(outputs, labels)
                 loss.backward()  # Backward pass
                 optimizer.step()  # Optimize
-
                 running_loss += loss.item() * inputs.size(0)
                 train_epoch.set_postfix(loss=loss.item())
-
+                # Calculate training accuracy
+                crop_pred, _, _ = outputs
+                _, crop_pred = crop_pred.max(1)
+                correct += crop_pred.eq(labels["crop_type"]).sum().item()
+                total += inputs.size(0)
         epoch_loss = running_loss / len(train_loader.dataset)
         train_losses.append(epoch_loss)
-
+        epoch_accuracy = correct / total * 100
+        train_accuracies.append(epoch_accuracy)
         # Validation phase with tqdm progress bar
         model.eval()  # Set model to evaluate mode
         val_running_loss = 0.0
+        correct = 0
+        total = 0
         with torch.no_grad(), tqdm(valid_loader, unit="batch") as valid_epoch:
             for inputs, labels in valid_epoch:
-                valid_epoch.set_description(f"Epoch {epoch+1}/{num_epochs} [Validate]")
-
+                valid_epoch.set_description(f"Epoch {epoch+1}/{n_epochs} [Validate]")
                 inputs = inputs.to(device)
                 labels = {task: labels[task].to(device) for task in labels}
-
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
-
                 val_running_loss += loss.item() * inputs.size(0)
                 valid_epoch.set_postfix(loss=loss.item())
-
+                # Calculate
+                crop_pred, _, _ = outputs
+                _, crop_pred = crop_pred.max(1)
+                correct += crop_pred.eq(labels["crop_type"]).sum().item()
+                total += inputs.size(0)
         val_epoch_loss = val_running_loss / len(valid_loader.dataset)
         val_losses.append(val_epoch_loss)
-
+        val_epoch_accuracy = correct / total * 100
+        val_accuracies.append(val_epoch_accuracy)
         print(
-            f"Epoch {epoch+1}/{num_epochs}, Training Loss: {epoch_loss:.4f}, Validation Loss: {val_epoch_loss:.4f}"
+            f"Epoch {epoch+1}/{n_epochs}, Training Loss: {epoch_loss:.4f}, Validation Loss: {val_epoch_loss:.4f}, Training Accuracy: {epoch_accuracy:.2f}%, Validation Accuracy: {val_epoch_accuracy:.2f}%"
         )
-
+        # Learning rate scheduler step
+        scheduler.step()
         # Early stopping check
         early_stopping(val_epoch_loss)
         if early_stopping.early_stop:
             print("Early stopping triggered. Stopping training.")
             break
-
-    return train_losses, val_losses
+    return model, (train_losses, val_losses), (train_accuracies, val_accuracies)
 
 
 # Train the model
-early_stopping = EarlyStopping(patience=5, min_delta=0.01)
-train_losses, val_losses = train_model(
-    model,
-    criterion,
-    optimizer,
-    train_loader,
-    valid_loader,
-    early_stopping,
-    num_epochs=25,
+model, losses, accuracies = train(
+    model, train_loader, valid_loader, criterion, optimizer, scheduler, 25, device
 )
+
+# Unpack the losses and accuracies
+train_losses, val_losses = losses
+train_accuracies, val_accuracies = accuracies
+
+# plot the training and validation losses
+plt.figure(figsize=(10, 6))
+plt.plot(train_losses, label="Training Loss", color="skyblue")
+plt.plot(val_losses, label="Validation Loss", color="orange")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Training and Validation Loss")
+plt.legend()
+plt.grid(True)
+plt.savefig("../../reports/figures/losses.png")
+plt.show()
+
+# plot the training and validation accuracies
+plt.figure(figsize=(10, 6))
+plt.plot(train_accuracies, label="Training Accuracy", color="skyblue")
+plt.plot(val_accuracies, label="Validation Accuracy", color="orange")
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy (%)")
+plt.title("Training and Validation Accuracy")
+plt.legend()
+plt.grid(True)
+plt.savefig("../../reports/figures/accuracies.png")
+plt.show()
+
+# evaluate the model
+def evaluate(model, data_loader, device):
+    model.eval()
+    correct = 0
+    total = 0
+    predictions = []
+    targets = []
+
+    with torch.no_grad():
+        for inputs, labels in data_loader:
+            inputs = inputs.to(device)
+            labels = {task: labels[task].to(device) for task in labels}
+
+            outputs = model(inputs)
+
+            crop_pred, _, _ = outputs
+            _, crop_pred = crop_pred.max(1)
+            correct += crop_pred.eq(labels["crop_type"]).sum().item()
+            total += inputs.size(0)
+
+            predictions.extend(crop_pred.tolist())
+            targets.extend(labels["crop_type"].tolist())
+
+    accuracy = correct / total
+    return accuracy, predictions, targets
+
+
+train_accuracy, train_predictions, train_targets = evaluate(model, train_loader, device)
+
+valid_accuracy, valid_predictions, valid_targets = evaluate(model, valid_loader, device)
+
+print(f"Training Accuracy: {train_accuracy:.2f}")
+print(f"Validation Accuracy: {valid_accuracy:.2f}")
+
+# Calculate additional evaluation metrics
+train_precision = precision_score(train_targets, train_predictions, average="macro")
+train_recall = recall_score(train_targets, train_predictions, average="macro")
+train_f1 = f1_score(train_targets, train_predictions, average="macro")
+
+valid_precision = precision_score(valid_targets, valid_predictions, average="macro")
+valid_recall = recall_score(valid_targets, valid_predictions, average="macro")
+valid_f1 = f1_score(valid_targets, valid_predictions, average="macro")
+
+print(
+    f"Training Precision: {train_precision:.2f}, Recall: {train_recall:.2f}, F1 Score: {train_f1:.2f}"
+)
+print(
+    f"Validation Precision: {valid_precision:.2f}, Recall: {valid_recall:.2f}, F1 Score: {valid_f1:.2f}"
+)
+
+
+# Visualizing predictions make it a plot side by side with the probability of the prediction. make the plot good enough to be saved as an image for my research paper
+
+
+
+# Save the model
+    
