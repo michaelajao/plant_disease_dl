@@ -1,182 +1,296 @@
-from zipfile import ZipFile
 import os
 import pandas as pd
-import numpy as np
-from PIL import Image
-from tqdm import tqdm
+from torchvision import datasets, transforms
+from torch.utils.data import Dataset, DataLoader
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torchvision.models as models
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-import matplotlib.pyplot as plt
-from torchvision.utils import make_grid
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+from tqdm import tqdm
 
-torch.manual_seed(10)
-if torch.cuda.is_available():
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Matplotlib configurations for better visualization aesthetics
-plt.rcParams.update(
-    {
-        "lines.linewidth": 2,
-        "font.family": "serif",
-        "axes.titlesize": 20,
-        "axes.labelsize": 14,
-        "figure.figsize": [15, 8],
-        "figure.autolayout": True,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "axes.grid": True,
-        "grid.color": "0.75",
-        "legend.fontsize": "medium",
-    }
-)
-
-
-print(
-    os.listdir(
-        "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/train"
-    )
-)
-
-print(
-    len(
-        os.listdir(
-            "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/train"
-        )
-    )
-)
 
 data_path = "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)"
 train_dir = os.path.join(data_path, "train")
 valid_dir = os.path.join(data_path, "valid")
 
+# Extracting disease folders from the training directory
 diseases = os.listdir(train_dir)
 
 plant_names = []
-for disease in diseases:
-    plant = disease.split("___")[0]
+disease_names = []
+healthy_labels = []
+
+# Separating plant names and disease names, including a separate category for 'healthy'
+for disease_folder in diseases:
+    parts = disease_folder.split("___")
+    plant = parts[0]
+    disease = (
+        parts[1] if len(parts) > 1 else "Healthy"
+    )  # Assumes disease label is present or assigns 'Healthy'
+
     if plant not in plant_names:
         plant_names.append(plant)
 
-disease_names = []
-for disease in diseases:
-    disease = disease.split("___")[1]
-    if disease not in disease_names:
+    if disease == "Healthy":
+        healthy_labels.append(
+            f"{plant}___Healthy"
+        )  # Keeping track of healthy labels for disease detection
+    elif disease not in disease_names:
         disease_names.append(disease)
 
-print(f"Number of unique plants: {len(plant_names)}")
-print(f"Number of unique diseases: {len(disease_names)}")
-
+# Count the number of images for each disease in the dataset
 disease_count = {}
-for disease in diseases:
-    if disease not in disease_count:
-        disease_count[disease] = len(os.listdir(os.path.join(train_dir, disease)))
+for disease_folder in diseases:
+    disease_path = os.path.join(train_dir, disease_folder)
+    disease_count[disease_folder] = len(os.listdir(disease_path))
 
-disease_count = pd.DataFrame(
+# Convert the disease_count dictionary to a pandas DataFrame for better analysis and visualization
+disease_count_df = pd.DataFrame(
     disease_count.values(), index=disease_count.keys(), columns=["no_of_images"]
 )
 
-disease_count.sort_values(by="no_of_images", ascending=False).plot(
-    kind="bar", figsize=(15, 8), color="skyblue"
-)
-plt.title("Number of images for each disease")
-plt.xlabel("Disease")
-plt.ylabel("Number of images")
-plt.show()
+print(f"Number of unique plants: {len(plant_names)}")
+print(f"Number of unique diseases (excluding healthy): {len(disease_names)}")
+print(f"Total classes (including healthy labels per plant): {len(diseases)}")
 
-print(
-    f"Total number of images available for training: {disease_count.no_of_images.sum()}"
-)
+# Optionally, display the DataFrame for analysis
+print(disease_count_df)
+
+# Create a dataframe for counting how many images are available for each crop and disease in the training and validation
+diseases = os.listdir(train_dir)
+train_data = []
+valid_data = []
+
+for disease in diseases:
+    train_data.append(
+        {
+            "plant": disease.split("___")[0],
+            "disease": disease.split("___")[1],
+            "no_of_images": len(os.listdir(os.path.join(train_dir, disease))),
+        }
+    )
+
+    valid_data.append(
+        {
+            "plant": disease.split("___")[0],
+            "disease": disease.split("___")[1],
+            "no_of_images": len(os.listdir(os.path.join(valid_dir, disease))),
+        }
+    )
+
+train_data = pd.DataFrame(train_data)
+valid_data = pd.DataFrame(valid_data)
+
+train_data = train_data.groupby(["plant", "disease"]).sum().reset_index()
+valid_data = valid_data.groupby(["plant", "disease"]).sum().reset_index()
+
+train_data["data"] = "train"
+valid_data["data"] = "valid"
+
+data = pd.concat([train_data, valid_data])
+
+data = data.pivot(
+    index=["plant", "disease"], columns="data", values="no_of_images"
+).reset_index()
+
+data = data.fillna(0)
+
+data["total_images"] = data.train + data.valid
+
+data = data.sort_values(by="total_images", ascending=False)
+
+data = data.reset_index(drop=True)
+
+data.to_csv("../../data/processed/data.csv", index=False)
+
+
+class PlantDiseaseDataset(Dataset):
+    def __init__(self, data_dir, transform=None):
+        """
+        Custom dataset for plant disease classification that handles
+        - Crop Type Classification
+        - Disease Detection (Healthy vs Diseased)
+        - Disease Type Classification
+        """
+        self.data_dir = data_dir
+        self.transform = transform
+        self.data = []
+        self.labels = {"crop_type": [], "disease": [], "healthy": []}
+        self.class_to_idx = {
+            "crop_type": {},
+            "disease": {},
+            "healthy": {True: 1, False: 0},
+        }
+        self.idx_to_class = {
+            "crop_type": {},
+            "disease": {},
+            "healthy": {1: True, 0: False},
+        }
+
+        self._prepare_dataset()
+
+    def _prepare_dataset(self):
+        disease_folders = os.listdir(self.data_dir)
+        for folder_name in disease_folders:
+            folder_path = os.path.join(self.data_dir, folder_name)
+            images = os.listdir(folder_path)
+            plant, disease = folder_name.split("___")
+
+            if plant not in self.class_to_idx["crop_type"]:
+                self.class_to_idx["crop_type"][plant] = len(
+                    self.class_to_idx["crop_type"]
+                )
+                self.idx_to_class["crop_type"][
+                    len(self.idx_to_class["crop_type"])
+                ] = plant
+
+            if disease not in self.class_to_idx["disease"]:
+                self.class_to_idx["disease"][disease] = len(
+                    self.class_to_idx["disease"]
+                )
+                self.idx_to_class["disease"][
+                    len(self.idx_to_class["disease"])
+                ] = disease
+
+            for img in images:
+                img_path = os.path.join(folder_path, img)
+                self.data.append(img_path)
+                self.labels["crop_type"].append(self.class_to_idx["crop_type"][plant])
+                self.labels["disease"].append(self.class_to_idx["disease"][disease])
+                self.labels["healthy"].append(1 if disease == "Healthy" else 0)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        img_path = self.data[idx]
+        img = datasets.folder.default_loader(
+            img_path
+        )  # Default loader handles image opening and conversion to RGB
+        if self.transform:
+            img = self.transform(img)
+
+        labels = {
+            "crop_type": torch.tensor(self.labels["crop_type"][idx]),
+            "disease": torch.tensor(self.labels["disease"][idx]),
+            "healthy": torch.tensor(self.labels["healthy"][idx], dtype=torch.float),
+        }
+
+        return img, labels
+
 
 transform = transforms.Compose(
     [
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        # transforms.RandomRotation(degrees=45),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 )
 
-train_data = datasets.ImageFolder(train_dir, transform=transform)
-valid_data = datasets.ImageFolder(valid_dir, transform=transform)
+train_dataset = PlantDiseaseDataset(train_dir, transform=transform)
+valid_dataset = PlantDiseaseDataset(valid_dir, transform=transform)
 
-print(f"Number of classes: {len(train_data.classes)}")
+# Example DataLoader setup
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+valid_loader = DataLoader(valid_dataset, batch_size=32)
 
-image, label = train_data[200]
-print(f"Image shape: {image.shape}")
-print(f"Label: {label}")
-plt.imshow(image.permute(1, 2, 0))
-plt.title(train_data.classes[label])
-plt.show()
-
-train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
-valid_loader = DataLoader(valid_data, batch_size=32)
+# To access the mapping back from indices to class names
+print(train_dataset.idx_to_class)
 
 
-def show_batch(dl):
-    for images, labels in dl:
-        fig, ax = plt.subplots(figsize=(16, 8))
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.imshow(
-            make_grid(images, nrow=8).permute(1, 2, 0).numpy(),
-            cmap="viridis",
+class MultiTaskCNN(nn.Module):
+    def __init__(self, num_crop_types, num_diseases):
+        super(MultiTaskCNN, self).__init__()
+
+        # Load a pre-trained model as feature extractor
+        # Here, we use ResNet50, but you can choose a different model like EfficientNet
+        self.feature_extractor = models.resnet50(pretrained=True)
+
+        # Remove the last layer (fully connected layer) of the feature extractor
+        num_features = self.feature_extractor.fc.in_features
+        self.feature_extractor.fc = nn.Identity()
+
+        # Task-specific layers
+        # Crop classification head
+        self.crop_head = nn.Sequential(
+            nn.Linear(num_features, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(512, num_crop_types),
         )
-        break
-    
-show_batch(train_loader)
 
-# Model definition
-class CustomCNN(nn.Module):
-    def __init__(self, num_layers, hidden_units, num_classes):
-        super(CustomCNN, self).__init__()
-        self.features = self._make_layers(num_layers, hidden_units)
-        in_features = hidden_units[-1] * (224 // 2**num_layers) ** 2
-        self.classifier = nn.Linear(in_features, num_classes)
+        # Disease detection head (binary classification: healthy vs diseased)
+        self.disease_detection_head = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(256, 1),
+            nn.Sigmoid(),
+        )
+
+        # Disease classification head
+        self.disease_classification_head = nn.Sequential(
+            nn.Linear(num_features, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(512, num_diseases),
+        )
 
     def forward(self, x):
-        x = self.features(x)
-        x = torch.flatten(x, 1)
-        x = self.classifier(x)
-        return x
+        # Shared feature extraction
+        x = self.feature_extractor(x)
 
-    def _make_layers(self, num_layers, hidden_units):
-        layers = []
-        in_channels = 3
-        for i in range(num_layers):
-            layers += [
-                nn.Conv2d(in_channels, hidden_units[i], kernel_size=3, padding=1),
-                nn.BatchNorm2d(hidden_units[i]),
-                nn.ReLU(inplace=True),
-                nn.MaxPool2d(kernel_size=2, stride=2),
-            ]
-            in_channels = hidden_units[i]
-        return nn.Sequential(*layers)
+        # Task-specific predictions
+        crop_pred = self.crop_head(x)
+        disease_detection_pred = self.disease_detection_head(x)
+        disease_classification_pred = self.disease_classification_head(x)
+
+        return crop_pred, disease_detection_pred, disease_classification_pred
 
 
-# Model instantiation
-num_classes = len(train_data.classes)
-model = CustomCNN(num_layers=3, hidden_units=[32, 64, 128], num_classes=num_classes).to(
-    device
-)
+class MultiTaskLoss(nn.Module):
+    def __init__(
+        self,
+        weight_crop=1.0,
+        weight_disease_detection=1.0,
+        weight_disease_classification=1.0,
+    ):
+        super(MultiTaskLoss, self).__init__()
+        self.weight_crop = weight_crop
+        self.weight_disease_detection = weight_disease_detection
+        self.weight_disease_classification = weight_disease_classification
+        self.loss_crop = nn.CrossEntropyLoss()
+        self.loss_disease_detection = nn.BCELoss()
+        self.loss_disease_classification = nn.CrossEntropyLoss()
 
-# Loss and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    def forward(self, outputs, targets):
+        # Unpack the outputs and targets
+        crop_pred, disease_detection_pred, disease_classification_pred = outputs
+        crop_target, disease_detection_target, disease_classification_target = (
+            targets["crop_type"],
+            targets["healthy"],
+            targets["disease"],
+        )
+
+        # Calculate individual losses
+        loss_crop = self.loss_crop(crop_pred, crop_target)
+        loss_disease_detection = self.loss_disease_detection(
+            disease_detection_pred.view(-1), disease_detection_target
+        )
+        loss_disease_classification = self.loss_disease_classification(
+            disease_classification_pred, disease_classification_target
+        )
+
+        # Weighted sum of the individual losses
+        total_loss = (
+            self.weight_crop * loss_crop
+            + self.weight_disease_detection * loss_disease_detection
+            + self.weight_disease_classification * loss_disease_classification
+        )
+
+        return total_loss
 
 
-# Early stopping
 class EarlyStopping:
     def __init__(self, patience=5, min_delta=0.01):
         self.patience = patience
@@ -197,163 +311,96 @@ class EarlyStopping:
             self.counter = 0
 
 
-# Training loop
-def train(
-    model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs, device
+# Device configuration for training on GPU if available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Model instantiation
+num_crop_types = len(plant_names)
+num_diseases = len(disease_names) + 1  # Including 'Healthy' as a type of 'disease'
+model = MultiTaskCNN(num_crop_types, num_diseases).to(device)
+
+# Loss function and optimizer
+criterion = MultiTaskLoss().to(device)
+optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+
+
+def train_model(
+    model,
+    criterion,
+    optimizer,
+    train_loader,
+    valid_loader,
+    early_stopping,
+    num_epochs=25,
 ):
-    early_stopping = EarlyStopping(patience=5, min_delta=0.01)
-    train_losses = [[], []]
-    train_accuracies = [[], []]
-    for epoch in range(n_epochs):
-        print(f"Epoch {epoch + 1}\n-------------------------------")
-        model.train()
-        train_loss = 0.0
-        train_correct = 0
-        train_total = 0
-        for images, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
-            images, labels = images.to(device), labels.to(device)
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item() * images.size(0)
-            _, predicted = torch.max(outputs.data, 1)
-            train_total += labels.size(0)
-            train_correct += (predicted == labels).sum().item()
+    # Initialize lists to track per epoch losses
+    train_losses, val_losses = [], []
 
-        train_loss /= len(train_loader.dataset)
-        train_losses[0].append(train_loss)
-        train_accuracy = 100 * train_correct / train_total
-        train_accuracies[0].append(train_accuracy)
+    for epoch in range(num_epochs):
+        model.train()  # Set model to training mode
+        running_loss = 0.0
 
-        model.eval()
-        valid_loss = 0.0
-        valid_correct = 0
-        valid_total = 0
-        with torch.no_grad():
-            for images, labels in valid_loader:
-                images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
+        # Training phase with tqdm progress bar
+        with tqdm(train_loader, unit="batch") as train_epoch:
+            for inputs, labels in train_epoch:
+                train_epoch.set_description(f"Epoch {epoch+1}/{num_epochs} [Train]")
+
+                inputs = inputs.to(device)
+                labels = {task: labels[task].to(device) for task in labels}
+
+                optimizer.zero_grad()  # Zero the parameter gradients
+
+                outputs = model(inputs)  # Forward pass
                 loss = criterion(outputs, labels)
-                valid_loss += loss.item() * images.size(0)
-                _, predicted = torch.max(outputs.data, 1)
-                valid_total += labels.size(0)
-                valid_correct += (predicted == labels).sum().item()
+                loss.backward()  # Backward pass
+                optimizer.step()  # Optimize
 
-        valid_loss /= len(valid_loader.dataset)
-        train_losses[1].append(valid_loss)
-        valid_accuracy = 100 * valid_correct / valid_total
-        train_accuracies[1].append(valid_accuracy)
+                running_loss += loss.item() * inputs.size(0)
+                train_epoch.set_postfix(loss=loss.item())
+
+        epoch_loss = running_loss / len(train_loader.dataset)
+        train_losses.append(epoch_loss)
+
+        # Validation phase with tqdm progress bar
+        model.eval()  # Set model to evaluate mode
+        val_running_loss = 0.0
+        with torch.no_grad(), tqdm(valid_loader, unit="batch") as valid_epoch:
+            for inputs, labels in valid_epoch:
+                valid_epoch.set_description(f"Epoch {epoch+1}/{num_epochs} [Validate]")
+
+                inputs = inputs.to(device)
+                labels = {task: labels[task].to(device) for task in labels}
+
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+
+                val_running_loss += loss.item() * inputs.size(0)
+                valid_epoch.set_postfix(loss=loss.item())
+
+        val_epoch_loss = val_running_loss / len(valid_loader.dataset)
+        val_losses.append(val_epoch_loss)
 
         print(
-            f"Epoch {epoch+1}, Training Loss: {train_loss:.4f}, Validation Loss: {valid_loss:.4f}"
-        )
-        print(
-            f"Epoch {epoch+1}, Training Accuracy: {train_accuracy:.2f}%, Validation Accuracy: {valid_accuracy:.2f}%"
+            f"Epoch {epoch+1}/{num_epochs}, Training Loss: {epoch_loss:.4f}, Validation Loss: {val_epoch_loss:.4f}"
         )
 
-        early_stopping(valid_loss)
+        # Early stopping check
+        early_stopping(val_epoch_loss)
         if early_stopping.early_stop:
-            print("Early stopping triggered")
+            print("Early stopping triggered. Stopping training.")
             break
 
-        scheduler.step()
-
-    return model, train_losses, train_accuracies
+    return train_losses, val_losses
 
 
-model, losses, accuracies = train(
-    model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs=50, device=device
+# Train the model
+early_stopping = EarlyStopping(patience=5, min_delta=0.01)
+train_losses, val_losses = train_model(
+    model,
+    criterion,
+    optimizer,
+    train_loader,
+    valid_loader,
+    early_stopping,
+    num_epochs=25,
 )
-
-# Plotting training and validation losses and accuracies
-plt.figure(figsize=(15, 8))
-plt.subplot(1, 2, 1)
-plt.plot(losses[0], label="Training loss")
-plt.plot(losses[1], label="Validation loss")
-plt.title("Training and Validation Loss")
-plt.xlabel("Epoch")
-plt.ylabel("Loss")
-plt.legend()
-
-plt.subplot(1, 2, 2)
-plt.plot(accuracies[0], label="Training accuracy")
-plt.plot(accuracies[1], label="Validation accuracy")
-plt.title("Training and Validation Accuracy")
-plt.xlabel("Epoch")
-plt.ylabel("Accuracy")
-plt.legend()
-plt.show()
-
-
-def evaluate_model_performance(model, data_loader, device):
-    model.eval()
-    all_preds, all_labels = [], []
-    with torch.no_grad():
-        for images, labels in data_loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            _, preds = torch.max(outputs, 1)
-            all_preds.extend(preds.view(-1).cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-
-    accuracy = accuracy_score(all_labels, all_preds)
-    precision = precision_score(all_labels, all_preds, average="macro")
-    recall = recall_score(all_labels, all_preds, average="macro")
-    f1 = f1_score(all_labels, all_preds, average="macro")
-    print(
-        f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}"
-    )
-
-
-evaluate_model_performance(model, valid_loader, device)
-    
-    
-    
-# Visualizing predictions make it a plot side by side with the probability of the prediction. make the plot good enough to be saved as an image for my research paper
-path_test = "../../data/raw/"
-test_data = datasets.ImageFolder(path_test, transform=transform)
-
-test_loader = DataLoader(test_data, batch_size=32)
-
-def show_predictions(model, data_loader, device, class_names):
-    model.eval()
-    with torch.no_grad():
-        for images, labels in data_loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            _, preds = torch.max(outputs, 1)
-            probs = F.softmax(outputs, dim=1)
-            fig, axes = plt.subplots(2, 5, figsize=(25, 10))
-            for i, ax in enumerate(axes.flat):
-                ax.imshow(images[i].permute(1, 2, 0).cpu().numpy())
-                ax.axis("off")
-                pred_label = class_names[preds[i]]
-                pred_prob = probs[i][preds[i]] * 100
-                ax.set_title(f"Prediction: {pred_label}\nProbability: {pred_prob:.2f}%")
-            plt.show()
-            break
-        
-show_predictions(model, test_loader, device, train_data.classes)
-
-
-
-# Save the model
-torch.save(model.state_dict(), "../../models/plant_disease_model.pth")
-
-# make the model usable for inference in a mobile app
-scripted_model = torch.jit.script(model)
-scripted_model.save("../../models/plant_disease_model.pt")
-
-# Save the class names
-import json
-
-with open("../../models/class_names.json", "w") as f:
-    json.dump(class_names, f)
-    
-# Save the model and class names in a zip file
-with ZipFile("../../models/plant_disease_model.zip", "w") as z:
-    z.write("../../models/plant_disease_model.pt")
-    z.write("../../models/class_names.json")
-    
