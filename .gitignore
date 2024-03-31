@@ -89,3 +89,4 @@ target/
 .mypy_cache/
 new-plant-diseases-dataset.zip
 plant-village-dataset-updated.zip
+src/models/model.pth
