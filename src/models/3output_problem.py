@@ -12,8 +12,34 @@ import numpy as np
 import time
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
+plt.rcParams.update(
+    {
+        "lines.linewidth": 2,
+        "font.family": "serif",
+        "axes.titlesize": 20,
+        "axes.labelsize": 14,
+        "figure.figsize": [15, 8],
+        "figure.autolayout": True,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.color": "0.75",
+        "legend.fontsize": "medium",
+        "legend.fancybox": False,
+        "legend.frameon": False,
+        "legend.shadow": False,
+        "savefig.transparent": True,
+        "xtick.labelsize": 12,
+        "ytick.labelsize": 12,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.1,
+        "savefig.dpi": 400,
+        
+    }
+)
 
-data_path = "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)"
+
+data_path = "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/"
 train_dir = os.path.join(data_path, "train")
 valid_dir = os.path.join(data_path, "valid")
 
@@ -114,6 +140,10 @@ class PlantDiseaseDataset(Dataset):
         - Crop Type Classification
         - Disease Detection (Healthy vs Diseased)
         - Disease Type Classification
+
+        Args:
+            data_dir (str): The directory path where the dataset is located.
+            transform (callable, optional): A function/transform that takes in an image and returns a transformed version. Default: None.
         """
         self.data_dir = data_dir
         self.transform = transform
@@ -133,6 +163,9 @@ class PlantDiseaseDataset(Dataset):
         self._prepare_dataset()
 
     def _prepare_dataset(self):
+        """
+        Private method to prepare the dataset by populating the data and labels lists.
+        """
         disease_folders = os.listdir(self.data_dir)
         for folder_name in disease_folders:
             folder_path = os.path.join(self.data_dir, folder_name)
@@ -163,9 +196,24 @@ class PlantDiseaseDataset(Dataset):
                 self.labels["healthy"].append(1 if disease == "Healthy" else 0)
 
     def __len__(self):
+        """
+        Returns the total number of samples in the dataset.
+
+        Returns:
+            int: The length of the dataset.
+        """
         return len(self.data)
 
     def __getitem__(self, idx):
+        """
+        Returns the sample and its corresponding labels at the given index.
+
+        Args:
+            idx (int): The index of the sample to retrieve.
+
+        Returns:
+            tuple: A tuple containing the image and its corresponding labels.
+        """
         img_path = self.data[idx]
         img = datasets.folder.default_loader(
             img_path
@@ -215,10 +263,10 @@ for i in range(10):
     ax = axes[i // 5, i % 5]
     ax.imshow(img.permute(1, 2, 0))
     ax.axis("off")
-    ax.set_title(f"{plant}\n{disease}\n{healthy}")
+    ax.set_title(f"Plant: {plant}\nDisease: {disease}\nHealthy: {healthy}")
 
 plt.tight_layout()
-plt.savefig("../../reports/figures/sample_images_multitask_problem.png")
+plt.savefig("../../reports/figures/sample_images_multitask_problem.pdf")
 plt.show()
 
 
@@ -367,7 +415,7 @@ class EarlyStopping:
 torch.manual_seed(100)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # Model instantiation
 num_crop_types = len(plant_names)
@@ -380,7 +428,9 @@ optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
 
-# create a training loop that trains the model on batches of data (training and validation). calculate the loss and accuracy of the model per batch using the validation data. print out what is happening for every 500 batches in the training loop and time the experiment to see how long it takes to train the model on the GPU
+# create a training loop function that trains the model on training and validation. calculate the loss and accuracy of the model per batch using the validation data. print out what is happening in the training loop and time the experiment to see how long it takes to train the model on the GPU
+
+
 def training_model(
     model,
     train_loader,
@@ -389,66 +439,73 @@ def training_model(
     optimizer,
     scheduler,
     device,
-    num_epochs=5,
+    num_epochs=3,
 ):
-    early_stopping = EarlyStopping(patience=3, min_delta=0.0)
     train_losses = []
     valid_losses = []
     valid_accuracies = []
-
-    # Time the experiment
-
-    start_time = time.time()
+    early_stopping = EarlyStopping(patience=3, min_delta=0.0)
 
     for epoch in range(num_epochs):
-        print(f"Epoch {epoch + 1}/{num_epochs}\n{'-' * 10}")
-
+        print(f"Epoch {epoch + 1}/{num_epochs}\n{'-' * 20}")
+        start_time = time.time()
         model.train()
-        running_loss = 0.0
+        train_loss = 0.0
 
-        for i, (images, labels) in enumerate(tqdm(train_loader)):
+        for images, labels in tqdm(train_loader):
+    
             images = images.to(device)
             labels = {key: value.to(device) for key, value in labels.items()}
 
             optimizer.zero_grad()
-
             outputs = model(images)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
 
-            running_loss += loss.item()
+            train_loss += loss.item()
 
-            if i % 500 == 499:
-                print(f"\nBatch {i + 1}, Loss: {running_loss / 500}")
-                running_loss = 0.0
+        train_loss /= len(train_loader)
+        train_losses.append(train_loss)
 
-        # Evaluate the model on the validation data and print the accuracy
-        valid_accuracy, _, _ = evaluate(model, valid_loader, device)
-        print(f"\nValidation Accuracy: {valid_accuracy:.2f}")
+        valid_loss = 0.0
+        accuracy, _, _ = evaluate(model, valid_loader, device)
+        valid_accuracies.append(accuracy)
 
-        # Save the model if the validation accuracy has increased
-        if not early_stopping(valid_accuracy):
-            torch.save(model.state_dict(), "../../models/model.pth")
-            print("Model saved!\n")
+        model.eval()
+        with torch.no_grad():
+            for images, labels in valid_loader:
+                images = images.to(device)
+                labels = {key: value.to(device) for key, value in labels.items()}
 
-        train_losses.append(running_loss / len(train_loader))
-        valid_losses.append(valid_accuracy)
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                valid_loss += loss.item()
+
+        valid_loss /= len(valid_loader)
+        valid_losses.append(valid_loss)
 
         scheduler.step()
 
+        print(
+            f"Train Loss: {train_loss:.4f}, "
+            f"Valid Loss: {valid_loss:.4f}, "
+            f"Valid Accuracy: {accuracy:.4f}, "
+            f"Time: {time.time() - start_time:.2f}s, "
+            f"Time in minutes: {(time.time() - start_time) / 60}m, "
+            f"LR: {scheduler.get_last_lr()}"
+        )
+
+        early_stopping(valid_loss)
         if early_stopping.early_stop:
             print("Early stopping")
             break
 
-    end_time = time.time()
-
-    print(f"Training time: {end_time - start_time:.0f}s")
-
-    return train_losses, valid_losses
+    return train_losses, valid_losses, valid_accuracies
 
 
-train_losses, valid_losses = training_model(
+# Train the model
+train_losses, valid_losses, valid_accuracies = training_model(
     model,
     train_loader,
     valid_loader,
@@ -459,11 +516,147 @@ train_losses, valid_losses = training_model(
     num_epochs=5,
 )
 
-# Plot the training and validation losses
+# Plot the training and validation losses and accuracy
+plt.figure(figsize=(12, 6))
+plt.subplot(1, 2, 1)
 plt.plot(train_losses, label="Training Loss")
-plt.plot(valid_losses, label="Validation Accuracy")
+plt.plot(valid_losses, label="Validation Loss")
 plt.xlabel("Epoch")
-plt.ylabel("Loss/Accuracy")
+plt.ylabel("Loss")
 plt.legend()
-plt.savefig("../../reports/figures/training_validation_losses_3_output.png")
+
+plt.subplot(1, 2, 2)
+plt.plot(valid_accuracies, label="Validation Accuracy")
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy")
+plt.legend()
+
+plt.tight_layout()
+plt.savefig("../../reports/figures/training_results_multitask_problem.pdf")
+plt.show()
+
+# save the trained model
+torch.save(model.state_dict(), "../../models/multitask_model.pth")
+
+# load the trained model
+
+model.load_state_dict(torch.load("../../models/multitask_model.pth"))
+
+# create a confusion matrix to see how well the model is performing on the validation data
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+
+_, predictions, targets = evaluate(model, valid_loader, device)
+cm = confusion_matrix(targets, predictions)
+
+plt.figure(figsize=(10, 8))
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+
+plt.xlabel("Predicted Label")
+plt.ylabel("True Label")
+plt.title("Confusion Matrix")
+plt.savefig("../../reports/figures/confusion_matrix_multitask_problem.pdf")
+plt.show()
+
+# calculate the precision, recall, and f1 score of the model on the validation data
+precision = precision_score(targets, predictions, average="weighted")
+recall = recall_score(targets, predictions, average="weighted")
+f1 = f1_score(targets, predictions, average="weighted")
+
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1 Score: {f1:.4f}")
+
+
+# plot the feature maps of the model to see what the model is learning
+def plot_feature_maps(model, image, layer_num):
+    model.eval()
+    model.to(device)
+
+    # Extract the feature maps
+    feature_maps = []
+    def hook_fn(module, input, output):
+        feature_maps.append(output)
+
+    layer = model.feature_extractor[layer_num]
+    hook = layer.register_forward_hook(hook_fn)
+
+    with torch.no_grad():
+        image = image.unsqueeze(0).to(device)
+        model(image)
+
+    hook.remove()
+
+    feature_maps = feature_maps[0].squeeze().cpu()
+
+    # Plot the feature maps
+    fig, axes = plt.subplots(8, 8, figsize=(20, 20))
+    for i in range(64):
+        ax = axes[i // 8, i % 8]
+        ax.imshow(feature_maps[i], cmap="viridis")
+        ax.axis("off")
+
+    plt.tight_layout()
+    plt.savefig("../../reports/figures/feature_maps_multitask_problem.pdf")
+    plt.show()
+    
+# Plot the feature maps of the first convolutional layer
+img, _ = valid_dataset[0]
+plot_feature_maps(model, img, 0)
+
+# Plot the feature maps of the last convolutional layer
+img, _ = valid_dataset[0]
+plot_feature_maps(model, img, 7)
+
+
+
+
+
+# Plot the results of the model on the validation data for 10 random images in the test data
+fig, axes = plt.subplots(2, 5, figsize=(20, 15))
+for i in range(10):
+    idx = np.random.randint(len(valid_dataset))
+    img, labels = valid_dataset[idx]
+    img = img.unsqueeze(0)  # Add batch dimension
+
+    with torch.no_grad():
+        crop_pred, disease_detection_pred, disease_classification_pred = model(
+            img.to(device)
+        )
+
+    crop_pred_prob = torch.softmax(crop_pred, dim=1)
+    crop_pred_label = crop_pred_prob.argmax(dim=1).item()
+    crop_pred_prob = crop_pred_prob.squeeze().tolist()
+
+    disease_detection_prob = torch.sigmoid(disease_detection_pred).item()
+    disease_detection_label = "Healthy" if disease_detection_prob > 0.5 else "Diseased"
+
+    disease_classification_prob = torch.softmax(disease_classification_pred, dim=1)
+    disease_classification_label = disease_names[
+        disease_classification_prob.argmax(dim=1).item()
+    ]
+    disease_classification_prob = disease_classification_prob.squeeze().tolist()
+
+    plant = valid_dataset.idx_to_class["crop_type"][labels["crop_type"].item()]
+    disease = valid_dataset.idx_to_class["disease"][
+        labels["disease"].item()
+    ]  # Skip 'Healthy' label
+    healthy = valid_dataset.idx_to_class["healthy"][
+        labels["healthy"].item()
+    ]  # Convert binary label to 'Healthy' or 'Diseased'
+
+    ax = axes[i // 5, i % 5]
+    ax.imshow(img.squeeze().permute(1, 2, 0))
+    ax.axis("off")
+    ax.set_title(
+        f"Plant: {plant}\n"
+        f"Disease: {disease}\n"
+        f"Healthy: {healthy}\n"
+        f"Predicted Crop: {plant_names[crop_pred_label]} (prob % {crop_pred_prob[crop_pred_label] * 100:.2f})\n"
+        f"Predicted Disease Detection: {disease_detection_label} (prob % {disease_detection_prob * 100:.2f})\n"
+        f"Predicted Disease: {disease_classification_label} (prob % {disease_classification_prob[disease_classification_pred.argmax(dim=1).item()] * 100:.2f})"
+    )
+
+plt.tight_layout()
+plt.savefig("../../reports/figures/prediction_results_multitask_problem.pdf")
 plt.show()

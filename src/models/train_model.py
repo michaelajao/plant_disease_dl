@@ -19,7 +19,7 @@ if torch.cuda.is_available():
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 # Matplotlib configurations for better visualization aesthetics
 plt.rcParams.update(
@@ -49,21 +49,21 @@ plt.rcParams.update(
 )
 
 
-print(
-    os.listdir(
-        "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/train"
-    )
-)
+# print(
+#     os.listdir(
+#         "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/train"
+#     )
+# )
 
-print(
-    len(
-        os.listdir(
-            "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)/train"
-        )
-    )
-)
+# print(
+#     len(
+#         os.listdir(
+#             "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/valid"
+#         )
+#     )
+# )
 
-data_path = "../../data/raw/New Plant Diseases Dataset(Augmented)/New Plant Diseases Dataset(Augmented)"
+data_path = "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/"
 train_dir = os.path.join(data_path, "train")
 valid_dir = os.path.join(data_path, "valid")
 
@@ -99,7 +99,7 @@ disease_count.sort_values(by="no_of_images", ascending=False).plot(
 plt.title("Number of images for each disease")
 plt.xlabel("Disease")
 plt.ylabel("Number of images")
-plt.savefig("../../reports/figures/disease_count.png")
+plt.savefig("../../reports/figures/disease_count.pdf")
 plt.show()
 
 print(
@@ -111,9 +111,9 @@ transform = transforms.Compose(
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
         # transforms.RandomRotation(degrees=45),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        # transforms.RandomHorizontalFlip(),
+        # transforms.RandomVerticalFlip(),
+        # transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 )
@@ -128,7 +128,7 @@ print(f"Image shape: {image.shape}")
 print(f"Label: {label}")
 plt.imshow(image.permute(1, 2, 0))
 plt.title(train_data.classes[label])
-plt.savefig("../../reports/figures/sample_image.png")
+plt.savefig("../../reports/figures/sample_image.pdf")
 plt.show()
 
 train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
@@ -144,9 +144,9 @@ for images, labels in train_loader:
     break
 
 # show a batch of images with their labels
-def show_images(images, labels, ncols=6):
+def show_images(images, labels, ncols=8):
     fig, axes = plt.subplots(
-        len(images) // ncols, ncols, figsize=(25, 20), sharex=True, sharey=True
+        len(images) // ncols, ncols, figsize=(20, 20), sharex=True, sharey=True
     )
     for i, ax in enumerate(axes.flat):
         image = images[i].permute(1, 2, 0).numpy()
@@ -154,6 +154,7 @@ def show_images(images, labels, ncols=6):
         ax.axis("off")
         ax.set_title(train_data.classes[labels[i]])
     plt.tight_layout()
+    plt.savefig("../../reports/figures/sample_image_batch.pdf")
     plt.show()
 
 images, labels = next(iter(train_loader))
@@ -204,7 +205,7 @@ scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
 # Early stopping
 class EarlyStopping:
-    def __init__(self, patience=5, min_delta=0.01):
+    def __init__(self, patience=1, min_delta=0.0):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
@@ -227,7 +228,7 @@ class EarlyStopping:
 def train(
     model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs, device
 ):
-    early_stopping = EarlyStopping(patience=5, min_delta=0.01)
+    early_stopping = EarlyStopping(patience=3, min_delta=0.0)
     train_losses = [[], []]
     train_accuracies = [[], []]
     for epoch in range(n_epochs):
@@ -290,11 +291,11 @@ def train(
 
 
 model, losses, accuracies = train(
-    model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs=50, device=device
+    model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs=20, device=device
 )
 
 # Plotting training and validation losses and accuracies
-plt.figure(figsize=(15, 8))
+plt.figure(figsize=(15, 10))
 plt.subplot(1, 2, 1)
 plt.plot(losses[0], label="Training loss")
 plt.plot(losses[1], label="Validation loss")
@@ -310,6 +311,7 @@ plt.title("Training and Validation Accuracy")
 plt.xlabel("Epoch")
 plt.ylabel("Accuracy")
 plt.legend()
+plt.savefig("../../reports/figures/model_training_performance.pdf")
 plt.show()
 
 
@@ -341,15 +343,15 @@ evaluate_model_performance(model, valid_loader, device)
 path_test = "../../data/raw/"
 
 # test images transformation
-transform = transforms.Compose(
-    [
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        # transforms.Normalize(
-        #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-        # ),
-    ]
-)
+# transform = transforms.Compose(
+#     [
+#         transforms.Resize((224, 224)),
+#         transforms.ToTensor(),
+#         # transforms.Normalize(
+#         #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+#         # ),
+#     ]
+# )
 
 test_data = datasets.ImageFolder(path_test, transform=transform)
 
@@ -370,6 +372,8 @@ def show_predictions(model, data_loader, device, class_names):
                 pred_label = class_names[preds[i]]
                 pred_prob = probs[i][preds[i]] * 100
                 ax.set_title(f"Prediction: {pred_label}\nProbability: {pred_prob:.2f}%")
+            plt.tight_layout()
+            plt.savefig("../../reports/figures/custom_model_predictions.pdf")
             plt.show()
             break
         
