@@ -8,6 +8,8 @@ import torchvision.models as models
 import torch.optim as optim
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import numpy as np
+import time
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 
@@ -54,8 +56,7 @@ disease_count_df = pd.DataFrame(
 print(f"Number of unique plants: {len(plant_names)}")
 print(f"Number of unique diseases (excluding healthy): {len(disease_names)}")
 print(f"Total classes (including healthy labels per plant): {len(diseases)}")
-
-# Optionally, display the DataFrame for analysis
+print(f"Total number of images: {sum(disease_count.values())}")
 print(disease_count_df)
 
 # Create a dataframe for counting how many images are available for each crop and disease in the training and validation
@@ -185,21 +186,43 @@ transform = transforms.Compose(
     [
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 )
 
 train_dataset = PlantDiseaseDataset(train_dir, transform=transform)
 valid_dataset = PlantDiseaseDataset(valid_dir, transform=transform)
 
-# Example DataLoader setup
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 valid_loader = DataLoader(valid_dataset, batch_size=32)
 
 # To access the mapping back from indices to class names
 print(train_dataset.idx_to_class)
 
+# Plot the random 10 images across crop, disease, and healthy / unhealthy labels
+fig, axes = plt.subplots(2, 5, figsize=(20, 8))
+for i in range(10):
+    idx = np.random.randint(len(train_dataset))
+    img, labels = train_dataset[idx]
+    plant = train_dataset.idx_to_class["crop_type"][labels["crop_type"].item()]
+    disease = train_dataset.idx_to_class["disease"][
+        labels["disease"].item()
+    ]  # Skip 'Healthy' label
+    healthy = train_dataset.idx_to_class["healthy"][
+        labels["healthy"].item()
+    ]  # Convert binary label to 'Healthy' or 'Diseased'
 
+    ax = axes[i // 5, i % 5]
+    ax.imshow(img.permute(1, 2, 0))
+    ax.axis("off")
+    ax.set_title(f"{plant}\n{disease}\n{healthy}")
+
+plt.tight_layout()
+plt.savefig("../../reports/figures/sample_images_multitask_problem.png")
+plt.show()
+
+
+# Define a multi-task CNN model that predicts the crop type, disease detection, and disease classification
 class MultiTaskCNN(nn.Module):
     def __init__(self, num_crop_types, num_diseases):
         super(MultiTaskCNN, self).__init__()
@@ -250,6 +273,7 @@ class MultiTaskCNN(nn.Module):
         return crop_pred, disease_detection_pred, disease_classification_pred
 
 
+# Define a multi-task loss function that combines the losses for crop classification, disease detection, and disease classification
 class MultiTaskLoss(nn.Module):
     def __init__(
         self,
@@ -293,25 +317,34 @@ class MultiTaskLoss(nn.Module):
         return total_loss
 
 
-# create a function that times the experiments, how fast it runs on the GPU
-def time_model(model, data_loader, device):
+# evaluate the model on the validation data and print out the accuracy of the model on the validation data
+def evaluate(model, valid_loader, device):
     model.eval()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for inputs, labels in data_loader:
-        inputs = inputs.to(device)
-        labels = {task: labels[task].to(device) for task in labels}
-        outputs = model(inputs)
-    end.record()
-    torch.cuda.synchronize()
-    print(f"Model took {start.elapsed_time(end):.3f} milliseconds to process the data.")        
-    return start.elapsed_time(end)  
+    predictions = []
+    targets = []
+
+    with torch.no_grad():
+        for images, labels in valid_loader:
+            images = images.to(device)
+            labels = {key: value.to(device) for key, value in labels.items()}
+
+            outputs = model(images)
+            crop_pred, disease_detection_pred, disease_classification_pred = outputs
+
+            # Disease detection predictions are probabilities, convert to binary predictions
+            disease_detection_pred = (disease_detection_pred > 0.5).float()
+
+            predictions.extend(disease_classification_pred.argmax(dim=1).cpu().numpy())
+            targets.extend(labels["disease"].cpu().numpy())
+
+    accuracy = accuracy_score(targets, predictions)
+
+    return accuracy, predictions, targets
 
 
-
+# Define an early stopping class that stops training if the validation loss does not decrease after a certain number of epochs
 class EarlyStopping:
-    def __init__(self, patience=5, min_delta=0.0):
+    def __init__(self, patience=1, min_delta=0.0):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
@@ -327,11 +360,14 @@ class EarlyStopping:
                 self.early_stop = True
         else:
             self.best_score = val_loss
-            self.counter = 0    # Reset the counter
+            self.counter = 0  # Reset the counter if the validation loss decreases
+
 
 # Device configuration for training on GPU if available. two GPUs are available make use of both of them
+torch.manual_seed(100)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 # Model instantiation
 num_crop_types = len(plant_names)
@@ -343,157 +379,91 @@ criterion = MultiTaskLoss().to(device)
 optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
-# create a training loop function that trains the model on batches of data (training and validation). calculate the loss and accuracy of the model per batch. print out what is happening in the training loop
-def train_model(model, criterion, optimizer, scheduler, train_loader, valid_loader, device, num_epochs=10):     
+
+# create a training loop that trains the model on batches of data (training and validation). calculate the loss and accuracy of the model per batch using the validation data. print out what is happening for every 500 batches in the training loop and time the experiment to see how long it takes to train the model on the GPU
+def training_model(
+    model,
+    train_loader,
+    valid_loader,
+    criterion,
+    optimizer,
+    scheduler,
+    device,
+    num_epochs=5,
+):
+    early_stopping = EarlyStopping(patience=3, min_delta=0.0)
     train_losses = []
-    val_losses = []
-    train_accuracies = []
-    val_accuracies = []
-    early_stopping = EarlyStopping(patience=5, min_delta=0.0)
+    valid_losses = []
+    valid_accuracies = []
+
+    # Time the experiment
+
+    start_time = time.time()
+
     for epoch in range(num_epochs):
+        print(f"Epoch {epoch + 1}/{num_epochs}\n{'-' * 10}")
+
         model.train()
-        train_loss = 0.0
-        correct = 0
-        total = 0
-        for inputs, labels in tqdm(train_loader):
-            inputs = inputs.to(device)
-            labels = {task: labels[task].to(device) for task in labels}
+        running_loss = 0.0
+
+        for i, (images, labels) in enumerate(tqdm(train_loader)):
+            images = images.to(device)
+            labels = {key: value.to(device) for key, value in labels.items()}
 
             optimizer.zero_grad()
-            outputs = model(inputs)
+
+            outputs = model(images)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
 
-            train_loss += loss.item()
+            running_loss += loss.item()
 
-            crop_pred, _, _ = outputs
-            _, crop_pred = crop_pred.max(1)
-            correct += crop_pred.eq(labels["crop_type"]).sum().item()
-            total += inputs.size(0)
+            if i % 500 == 499:
+                print(f"\nBatch {i + 1}, Loss: {running_loss / 500}")
+                running_loss = 0.0
 
-        train_losses.append(train_loss / len(train_loader))
-        train_accuracy = correct / total
-        train_accuracies.append(train_accuracy)
+        # Evaluate the model on the validation data and print the accuracy
+        valid_accuracy, _, _ = evaluate(model, valid_loader, device)
+        print(f"\nValidation Accuracy: {valid_accuracy:.2f}")
 
-        val_loss = 0.0
-        correct = 0
-        total = 0
-        model.eval()
-        with torch.no_grad():
-            for inputs, labels in valid_loader:
-                inputs = inputs.to(device)
-                labels = {task: labels[task].to(device) for task in labels}
+        # Save the model if the validation accuracy has increased
+        if not early_stopping(valid_accuracy):
+            torch.save(model.state_dict(), "../../models/model.pth")
+            print("Model saved!\n")
 
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
-                val_loss += loss.item()
+        train_losses.append(running_loss / len(train_loader))
+        valid_losses.append(valid_accuracy)
 
-                crop_pred, _, _ = outputs
-                _, crop_pred = crop_pred.max(1)
-                correct += crop_pred.eq(labels["crop_type"]).sum().item()
-                total += inputs.size(0)
+        scheduler.step()
 
-        val_losses.append(val_loss / len(valid_loader))
-        val_accuracy = correct / total
-        val_accuracies.append(val_accuracy)
-
-        print(
-            f"Epoch {epoch+1}/{num_epochs}, "
-            f"Train Loss: {train_loss / len(train_loader):.4f}, "
-            f"Train Accuracy: {train_accuracy:.2f}, "
-            f"Val Loss: {val_loss / len(valid_loader):.4f}, "
-            f"Val Accuracy: {val_accuracy:.2f}"
-        )
-
-        scheduler.step(val_loss)
-
-        early_stopping(val_loss)
         if early_stopping.early_stop:
             print("Early stopping")
             break
 
-    return model, train_losses, val_losses, train_accuracies, val_accuracies
+    end_time = time.time()
+
+    print(f"Training time: {end_time - start_time:.0f}s")
+
+    return train_losses, valid_losses
 
 
-# plot the training and validation losses
-plt.figure(figsize=(10, 6))
-plt.plot(train_losses, label="Training Loss", color="skyblue")
-plt.plot(val_losses, label="Validation Loss", color="orange")
-plt.xlabel("Epoch")
-plt.ylabel("Loss")
-plt.title("Training and Validation Loss")
-plt.legend()
-plt.grid(True)
-plt.savefig("../../reports/figures/losses.png")
-plt.show()
-
-# plot the training and validation accuracies
-plt.figure(figsize=(10, 6))
-plt.plot(train_accuracies, label="Training Accuracy", color="skyblue")
-plt.plot(val_accuracies, label="Validation Accuracy", color="orange")
-plt.xlabel("Epoch")
-plt.ylabel("Accuracy (%)")
-plt.title("Training and Validation Accuracy")
-plt.legend()
-plt.grid(True)
-plt.savefig("../../reports/figures/accuracies.png")
-plt.show()
-
-# evaluate the model
-def evaluate(model, data_loader, device):
-    model.eval()
-    correct = 0
-    total = 0
-    predictions = []
-    targets = []
-
-    with torch.no_grad():
-        for inputs, labels in data_loader:
-            inputs = inputs.to(device)
-            labels = {task: labels[task].to(device) for task in labels}
-
-            outputs = model(inputs)
-
-            crop_pred, _, _ = outputs
-            _, crop_pred = crop_pred.max(1)
-            correct += crop_pred.eq(labels["crop_type"]).sum().item()
-            total += inputs.size(0)
-
-            predictions.extend(crop_pred.tolist())
-            targets.extend(labels["crop_type"].tolist())
-
-    accuracy = correct / total
-    return accuracy, predictions, targets
-
-
-train_accuracy, train_predictions, train_targets = evaluate(model, train_loader, device)
-
-valid_accuracy, valid_predictions, valid_targets = evaluate(model, valid_loader, device)
-
-print(f"Training Accuracy: {train_accuracy:.2f}")
-print(f"Validation Accuracy: {valid_accuracy:.2f}")
-
-# Calculate additional evaluation metrics
-train_precision = precision_score(train_targets, train_predictions, average="macro")
-train_recall = recall_score(train_targets, train_predictions, average="macro")
-train_f1 = f1_score(train_targets, train_predictions, average="macro")
-
-valid_precision = precision_score(valid_targets, valid_predictions, average="macro")
-valid_recall = recall_score(valid_targets, valid_predictions, average="macro")
-valid_f1 = f1_score(valid_targets, valid_predictions, average="macro")
-
-print(
-    f"Training Precision: {train_precision:.2f}, Recall: {train_recall:.2f}, F1 Score: {train_f1:.2f}"
-)
-print(
-    f"Validation Precision: {valid_precision:.2f}, Recall: {valid_recall:.2f}, F1 Score: {valid_f1:.2f}"
+train_losses, valid_losses = training_model(
+    model,
+    train_loader,
+    valid_loader,
+    criterion,
+    optimizer,
+    scheduler,
+    device,
+    num_epochs=5,
 )
 
-
-# Visualizing predictions make it a plot side by side with the probability of the prediction. make the plot good enough to be saved as an image for my research paper
-
-
-
-# Save the model
-    
+# Plot the training and validation losses
+plt.plot(train_losses, label="Training Loss")
+plt.plot(valid_losses, label="Validation Accuracy")
+plt.xlabel("Epoch")
+plt.ylabel("Loss/Accuracy")
+plt.legend()
+plt.savefig("../../reports/figures/training_validation_losses_3_output.png")
+plt.show()
