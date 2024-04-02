@@ -384,6 +384,18 @@ show_predictions(model, test_loader, device, train_data.classes)
 # Save the model
 torch.save(model.state_dict(), "../../models/plant_disease_model.pth")
 
-# make the model usable for inference in a mobile app
-scripted_model = torch.jit.script(model)
-scripted_model.save("../../models/plant_disease_model.pt")
+# load the saved trained model
+
+model = torch.load("../../models/plant_disease_model.pth")
+
+# visualize the model architecture
+import torchvision
+from torchview import draw_graph
+
+model = CustomCNN(num_layers=5, hidden_units=[32, 64, 128, 256, 512], num_classes=num_classes).to(
+    device
+)
+
+model_graph = draw_graph(model, torch.zeros(1, 3, 224, 224).to(device), expand_nested=True)
+model_graph.visual_graph()
+
