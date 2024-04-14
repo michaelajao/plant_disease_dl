@@ -336,3 +336,27 @@ train_losses, valid_losses = train(
 )
 
 # Plot the training and validation losses
+
+
+import numpy as np
+
+# loss using numpy for classification problem with 3 classes: example and P(positive); P1 Normal = 0.6, P3 Normal = 0.3, and P5 Mass = 0.4
+
+p1 = 0.6
+p3 = 0.3
+
+# since these are negative examples, the losses will be -log(1 - P(positive))
+
+loss_p1 = -np.log(1 - p1)
+loss_p3 = -np.log(1 - p3)
+
+print(f"Loss for P1: {loss_p1:.4f}")
+print(f"Loss for P3: {loss_p3:.4f}")
+
+t_loss = loss_p1 + loss_p3
+print(f"Total loss: {t_loss:.4f}")
+
+import tensorflow as tf
+
+# chcck if gpu is available
+print("GPU Available: ", tf.config.list_physical_devices("GPU"))
