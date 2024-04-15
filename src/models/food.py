@@ -9,7 +9,7 @@ import torchvision
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 from PIL import Image
-
+from tqdm import tqdm
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -37,8 +37,8 @@ np.random.seed(100)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the train , test and validation data and labels
-print(os.listdir("../../data/raw/train"))
-labels_df = pd.read_csv("../../data/raw/labels/labels.csv")
+print(os.listdir("../../data/raw/Food/train"))
+labels_df = pd.read_csv("../../data/raw/Food/labels/labels.csv")
 # Define the data transformations
 transform = transforms.Compose(
     [
@@ -101,9 +101,9 @@ def collate_fn(batch):
     return default_collate(batch)
 
 
-train_data_path = "../../data/raw/train"
-test_data_path = "../../data/raw/test"
-val_data_path = "../../data/raw/val"
+train_data_path = "../../data/raw/Food/train"
+test_data_path = "../../data/raw/Food/test"
+val_data_path = "../../data/raw/Food/val"
 
 train_dataset = CustomImageDataset(train_data_path, labels_df, transform)
 test_dataset = CustomImageDataset(
