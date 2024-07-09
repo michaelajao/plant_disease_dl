@@ -567,53 +567,8 @@ print(f"Precision: {precision:.4f}")
 print(f"Recall: {recall:.4f}")
 print(f"F1 Score: {f1:.4f}")
 
-
-# plot the feature maps of the model to see what the model is learning
-def plot_feature_maps(model, image, layer_num):
-    model.eval()
-    model.to(device)
-
-    # Extract the feature maps
-    feature_maps = []
-    def hook_fn(module, input, output):
-        feature_maps.append(output)
-
-    layer = model.feature_extractor[layer_num]
-    hook = layer.register_forward_hook(hook_fn)
-
-    with torch.no_grad():
-        image = image.unsqueeze(0).to(device)
-        model(image)
-
-    hook.remove()
-
-    feature_maps = feature_maps[0].squeeze().cpu()
-
-    # Plot the feature maps
-    fig, axes = plt.subplots(8, 8, figsize=(20, 20))
-    for i in range(64):
-        ax = axes[i // 8, i % 8]
-        ax.imshow(feature_maps[i], cmap="viridis")
-        ax.axis("off")
-
-    plt.tight_layout()
-    plt.savefig("../../reports/figures/feature_maps_multitask_problem.pdf")
-    plt.show()
-    
-# Plot the feature maps of the first convolutional layer
-img, _ = valid_dataset[0]
-plot_feature_maps(model, img, 0)
-
-# Plot the feature maps of the last convolutional layer
-img, _ = valid_dataset[0]
-plot_feature_maps(model, img, 7)
-
-
-
-
-
 # Plot the results of the model on the validation data for 10 random images in the test data
-fig, axes = plt.subplots(2, 5, figsize=(20, 15))
+fig, axes = plt.subplots(2, 5, figsize=(30, 15))
 for i in range(10):
     idx = np.random.randint(len(valid_dataset))
     img, labels = valid_dataset[idx]
