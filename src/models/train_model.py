@@ -19,7 +19,7 @@ if torch.cuda.is_available():
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Matplotlib configurations for better visualization aesthetics
 plt.rcParams.update(
@@ -32,7 +32,7 @@ plt.rcParams.update(
         "figure.autolayout": True,
         "axes.spines.top": False,
         "axes.spines.right": False,
-        "axes.grid": True,
+        "axes.grid": False,
         "grid.color": "0.75",
         "legend.fontsize": "medium",
         "legend.fancybox": False,
@@ -129,6 +129,8 @@ print(f"Label: {label}")
 plt.imshow(image.permute(1, 2, 0))
 plt.title(train_data.classes[label])
 plt.savefig("../../reports/figures/sample_image.pdf")
+plt.grid()
+plt.tight_layout()
 plt.show()
 
 train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
@@ -392,15 +394,3 @@ torch.save(model.state_dict(), "../../models/plant_disease_model.pth")
 # load the saved trained model
 
 model = torch.load("../../models/plant_disease_model.pth")
-
-# visualize the model architecture
-import torchvision
-from torchview import draw_graph
-
-model = CustomCNN(num_layers=5, hidden_units=[32, 64, 128, 256, 512], num_classes=num_classes).to(
-    device
-)
-
-model_graph = draw_graph(model, torch.zeros(1, 3, 224, 224).to(device), expand_nested=True)
-model_graph.visual_graph()
-
