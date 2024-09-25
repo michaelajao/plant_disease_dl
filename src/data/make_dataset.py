@@ -10,6 +10,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from zipfile import ZipFile
+# from helper_functions import *
 
 # Unzipping the dataset
 # with ZipFile("../../new-plant-diseases-dataset.zip", "r") as zip_ref:
@@ -19,31 +20,6 @@ from zipfile import ZipFile
 #     zip_ref.extractall("../../data/raw/plant-village-dataset-updated")
     
 
-plt.rcParams.update(
-    {
-        "lines.linewidth": 2,
-        "font.family": "serif",
-        "axes.titlesize": 20,
-        "axes.labelsize": 14,
-        "figure.figsize": [15, 8],
-        "figure.autolayout": True,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "axes.grid": True,
-        "grid.color": "0.75",
-        "legend.fontsize": "medium",
-        "legend.fancybox": False,
-        "legend.frameon": False,
-        "legend.shadow": False,
-        "savefig.transparent": True,
-        "xtick.labelsize": 12,
-        "ytick.labelsize": 12,
-        "savefig.bbox": "tight",
-        "savefig.pad_inches": 0.1,
-        "savefig.dpi": 400,
-        
-    }
-)
 
 data_path = "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/"
 train_dir = os.path.join(data_path, "train")
