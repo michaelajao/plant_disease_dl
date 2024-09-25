@@ -1,7 +1,9 @@
 # Importing necessary libraries
 import os
+import sys
 import pandas as pd
 import numpy as np
+import seaborn as sns
 
 from tqdm.auto import tqdm
 import torch
@@ -13,9 +15,11 @@ from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
 from timeit import default_timer as timer
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 # load in the helper functions
 from helper_functions import set_seeds, accuracy_fn
-
+from helper_functions import *
 # Set the seed for reproducibility
 set_seeds(42)
 
@@ -34,8 +38,6 @@ if torch.cuda.is_available():
 else:
     device = torch.device("cpu")  # Otherwise, use CPU
 
-
-
 # Specify the path to the dataset
 data_path = "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/"
 train_dir = os.path.join(data_path, "train")
@@ -49,91 +51,6 @@ plant_names = list(set(disease.split("___")[0] for disease in diseases))
 
 # Get unique disease names
 disease_names = list(set(disease.split("___")[1] for disease in diseases))
-
-# Display unique plants and diseases count
-print(f"Number of unique plants: {len(plant_names)}")
-print(f"Number of unique diseases: {len(disease_names)}")
-
-# Count the number of images for each disease
-disease_count = {}
-for disease in diseases:
-    disease_path = os.path.join(train_dir, disease)
-    try:
-        num_images = len(os.listdir(disease_path))
-        disease_count[disease] = num_images
-    except FileNotFoundError:
-        print(f"Warning: Directory for {disease} not found.")
-        disease_count[disease] = 0  # Set to 0 if directory doesn't exist
-
-# Convert the disease count into a DataFrame for easier plotting
-disease_count_df = pd.DataFrame.from_dict(disease_count, orient='index', columns=["no_of_images"])
-
-# Sort the DataFrame by the number of images in descending order
-disease_count_df = disease_count_df.sort_values(by="no_of_images", ascending=False)
-
-# Plot the number of images per disease using a horizontal bar chart
-plt.figure(figsize=(12, 15))  # Adjust figure size for better readability
-disease_count_df.plot(kind="barh", color="skyblue", legend=False)
-
-# Set title and labels
-plt.title("Number of images for each disease", fontsize=16)
-plt.xlabel("Number of images", fontsize=12)
-plt.ylabel("Disease", fontsize=12)
-
-# Adjust layout and save
-plt.tight_layout()
-plt.savefig("../../reports/figures/disease_count_horizontal.pdf")
-plt.show()
-
-# Display the total number of images
-print(
-    f"Total number of images available for training: {disease_count_df.no_of_images.sum()}"
-)
-
-# Separate healthy and unhealthy diseases
-healthy_df = disease_count_df[disease_count_df.index.str.contains("healthy", case=False)]
-unhealthy_df = disease_count_df[~disease_count_df.index.str.contains("healthy", case=False)]  # Everything else
-
-# Plot Healthy Diseases
-plt.figure(figsize=(10, 6))
-healthy_df.plot(kind="barh", color="green", legend=False)
-plt.title("Number of images for Healthy plants", fontsize=16)
-plt.xlabel("Number of images", fontsize=12)
-plt.ylabel("Plant", fontsize=12)
-plt.tight_layout()
-plt.savefig("../../reports/figures/healthy_disease_count.pdf")
-plt.show()
-
-# Plot Unhealthy Diseases
-plt.figure(figsize=(10, 12))  # Increase figure size for better readability
-unhealthy_df.plot(kind="barh", color="red", legend=False)
-plt.title("Number of images for Unhealthy plants", fontsize=16)
-plt.xlabel("Number of images", fontsize=12)
-plt.ylabel("Disease", fontsize=12)
-plt.tight_layout()
-plt.savefig("../../reports/figures/unhealthy_disease_count.pdf")
-plt.show()
-
-print(f"Number of healthy plants: {len(healthy_df)}")
-print(f"Number of unhealthy plants: {len(unhealthy_df)}")
-
-# Calculate total number of healthy and unhealthy images
-healthy_total = healthy_df['no_of_images'].sum()
-unhealthy_total = unhealthy_df['no_of_images'].sum()
-
-# Data for pie chart
-labels = ['Healthy', 'Unhealthy']
-sizes = [healthy_total, unhealthy_total]
-colors = ['green', 'red']
-
-# Create pie chart
-plt.figure(figsize=(8, 8))
-plt.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-plt.title("Proportion of Healthy vs Unhealthy Images", fontsize=18, weight='bold')
-plt.tight_layout()
-plt.savefig("../../reports/figures/healthy_unhealthy_proportion_pie.pdf", dpi=300)
-plt.show()
-
 
 # Define image transformations
 transform = transforms.Compose(
@@ -161,43 +78,7 @@ image, label = train_data[200]
 print(f"Image shape: {image.shape}")
 print(f"Label: {label}")
 
-# Display the image with the corresponding label as title
-plt.imshow(image.permute(1, 2, 0))
-plt.title(train_data.classes[label])
-plt.grid()  # Optional: can be removed if the grid isn't needed
-plt.tight_layout()
-plt.savefig("../../reports/figures/sample_image.pdf")
-plt.show()
 
-
-# Create figure with specified size
-fig = plt.figure(figsize=(12, 12))
-
-# Set the number of rows and columns for the subplots
-rows, cols = 3, 3
-
-# Loop through to create subplots
-for i in range(1, rows * cols + 1):
-    # Randomly select an image and label from the training data
-    image, label = train_data[np.random.randint(len(train_data))]
-
-    # Add subplot to the figure
-    ax = fig.add_subplot(rows, cols, i)
-
-    # Display the image
-    ax.imshow(image.permute(1, 2, 0))
-
-    # Set the title for the subplot
-    ax.set_title(f"Label: {label}")
-
-    # Remove axis labels
-    ax.axis("off")
-
-# Adjust layout to avoid overlapping
-plt.tight_layout()
-
-# Show the plot
-plt.show()
 
 
 train_loader = DataLoader(train_data, batch_size=BATCH_SIZE, shuffle=True)
@@ -213,32 +94,6 @@ for images, labels in train_loader:
     break
 
 
-# Function to display 5 random images with their labels
-def show_images(images, labels, ncols=5):
-    # Select 5 random indices from the batch
-    random_indices = np.random.choice(len(images), size=5, replace=False)
-
-    # Create the figure and axes for the images (1 row, 5 columns)
-    fig, axes = plt.subplots(1, ncols, figsize=(15, 3))
-
-    # Loop through the random images and plot each one with its label
-    for i, ax in enumerate(axes):
-        idx = random_indices[i]
-        image = images[idx].permute(1, 2, 0).numpy()  # Convert image for plotting
-        ax.imshow(image)
-        # ax.set_title(f"Label: {train_data.classes[labels[idx]]}")  # Set title to the class label
-        ax.set_title(f"Label: {labels[idx]}")  # Set title to the class label
-        ax.axis("off")  # Turn off the axis for each subplot
-    
-    # Adjust layout and show the figure
-    plt.tight_layout()
-    plt.show()
-
-# Retrieve a batch of images from the dataloader
-images, labels = next(iter(train_loader))
-
-# Display 5 random images with their labels
-show_images(images, labels)
 
 # BaseLine Model 
 # create a flatten layer to flatten the input image
