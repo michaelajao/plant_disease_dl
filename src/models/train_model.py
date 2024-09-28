@@ -1,430 +1,228 @@
 # Importing necessary libraries
 import os
 import sys
+import time  # For measuring the time of each epoch
 import pandas as pd
 import numpy as np
-import seaborn as sns
-
-from tqdm.auto import tqdm
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
-
 import matplotlib.pyplot as plt
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
-from timeit import default_timer as timer
+from tqdm.auto import tqdm
 
+# Load helper functions
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-# load in the helper functions
 from helper_functions import set_seeds, accuracy_fn
-from helper_functions import *
+
 # Set the seed for reproducibility
 set_seeds(42)
 
-# setup hyperparameters and configurations
+# Hyperparameters and configuration setup
 BATCH_SIZE = 32
-LEARNING_RATE = 0.1
+LEARNING_RATE = 0.001  # Smaller learning rate for better convergence
 NUM_EPOCHS = 5
-Height = 224
-Width = 224
+HEIGHT, WIDTH = 224, 224
+
+# Fraction of data to use for training and validation
+train_data_fraction = 0.3  # Use 30% of the training data
+valid_data_fraction = 0.1  # Use 10% of the validation data
 
 # Check if CUDA is available and configure accordingly
-if torch.cuda.is_available():
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    device = torch.device("cuda")  # Use CUDA if available
-else:
-    device = torch.device("cpu")  # Otherwise, use CPU
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Specify the path to the dataset
 data_path = "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/"
 train_dir = os.path.join(data_path, "train")
 valid_dir = os.path.join(data_path, "valid")
 
-# Extract disease categories
-diseases = os.listdir(train_dir)
-
-# Get unique plant names
-plant_names = list(set(disease.split("___")[0] for disease in diseases))
-
-# Get unique disease names
-disease_names = list(set(disease.split("___")[1] for disease in diseases))
-
 # Define image transformations
 transform = transforms.Compose(
     [
-        transforms.Resize((Height, Width)),
+        transforms.Resize((HEIGHT, WIDTH)),
         transforms.ToTensor(),
-        # Uncomment the following lines for data augmentation during training
-        # transforms.RandomRotation(degrees=45),
-        # transforms.RandomHorizontalFlip(),
-        # transforms.RandomVerticalFlip(),
-        # transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-        # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 )
 
-# Load the training and validation datasets
-train_data = datasets.ImageFolder(train_dir, transform=transform)
-valid_data = datasets.ImageFolder(valid_dir, transform=transform)
+# Load the full training and validation datasets
+full_train_data = datasets.ImageFolder(train_dir, transform=transform)
+full_valid_data = datasets.ImageFolder(valid_dir, transform=transform)
 
-# Print the number of classes in the dataset
-print(f"Number of classes: {len(train_data.classes)}")
+# Select a subset of the data based on the desired fraction
+train_size = int(len(full_train_data) * train_data_fraction)
+valid_size = int(len(full_valid_data) * valid_data_fraction)
 
-# Visualize a sample image from the training dataset
-image, label = train_data[200]
-print(f"Image shape: {image.shape}")
-print(f"Label: {label}")
+# Create a subset of the training and validation datasets
+train_data = Subset(
+    full_train_data, np.random.choice(len(full_train_data), train_size, replace=False)
+)
+valid_data = Subset(
+    full_valid_data, np.random.choice(len(full_valid_data), valid_size, replace=False)
+)
 
-
-
-
-train_loader = DataLoader(train_data, batch_size=BATCH_SIZE, shuffle=True)
-valid_loader = DataLoader(valid_data, batch_size=BATCH_SIZE, shuffle=False)
-
-# print the length of the train and valid loaders and the batchs of the train loader
-print(f"length of train_loader: {len(train_loader)} with batch size of {BATCH_SIZE}")
-print(f"length of valid_loader: {len(valid_loader)} with batch size of {BATCH_SIZE}")
-
-for images, labels in train_loader:
-    print(f"Image batch dimensions: {images.shape}")
-    print(f"Label batch dimensions: {labels.shape}")
-    break
+# Data Loaders
+train_loader = DataLoader(
+    train_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, pin_memory=True
+)
+valid_loader = DataLoader(
+    valid_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=2, pin_memory=True
+)
 
 
+# Model Definitions
+class ImprovedModel(nn.Module):
+    """
+    Defines an improved baseline model with convolutional and fully connected layers.
+    """
 
-# BaseLine Model 
-# create a flatten layer to flatten the input image
-flatten_model = nn.Flatten()
-
-# get a single batch of images from the train_loader
-x = train_data[0][0].unsqueeze(0)  # Add an extra dimension to simulate a batch of 1 image
-
-# Flatten the image
-x_flattened = flatten_model(x)
-
-# Print the shape of the original and flattened images
-print(f"Original image shape: {x.shape}")
-print(f"Flattened image shape: {x_flattened.shape}")
-
-# create a base line model with two linear layers
-class BaselineModel(nn.Module):
-    def __init__(self, input_size:int, hidden_size:int, output_size:int):
-        super(BaselineModel, self).__init__()
-        self.layer_stack = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(in_features=input_size, out_features=hidden_size),
+    def __init__(self, output_size: int):
+        super(ImprovedModel, self).__init__()
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(
+                in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1
+            ),
             nn.ReLU(),
-            nn.Linear(in_features=hidden_size, out_features=output_size)
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(
+                in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1
+            ),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
         )
-        
+        self.fc_layers = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(32 * (HEIGHT // 4) * (WIDTH // 4), 128),
+            nn.ReLU(),
+            nn.Linear(128, output_size),
+        )
+
     def forward(self, x):
-        x = self.layer_stack(x)
+        x = self.conv_layers(x)
+        x = self.fc_layers(x)
         return x
-    
-    
-# Model instantiation
-input_size = 3 * Height * Width
-hidden_size = 10
-output_size = len(train_data.classes)
-
-model_0 = BaselineModel(input_size, hidden_size, output_size).to(device)
-
-# Loss and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(model_0.parameters(), lr=LEARNING_RATE)
-
-# def print_train_time(start, end, device):
-#     train_time = end - start
-#     print(f"Training time: {train_time:.4f} seconds on {device}")
-#     return train_time
-# # Training loop
-# start_time = timer()
 
 
-# end_time = timer()
-# print_train_time(start_time, end_time, device="GPU")
+# Model Instantiation
+output_size = len(full_train_data.classes)
+model = ImprovedModel(output_size).to(device)
 
-# create the training loop and validation loop
-for epoch in tqdm(range(NUM_EPOCHS), desc="Epochs"):
-    model_0.train()
-    train_loss = 0.0
-    train_correct = 0
-    train_total = 0
-    for images, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
-        images, labels = images.to(device), labels.to(device)
+# Loss function and optimizer
+loss_fn = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+
+# Function to train the model
+def train_model(model, train_loader, optimizer, loss_fn, epoch):
+    """
+    Trains the model for one epoch and returns the average training loss.
+
+    Args:
+        model (torch.nn.Module): The model to be trained.
+        train_loader (torch.utils.data.DataLoader): The data loader for training data.
+        optimizer (torch.optim.Optimizer): The optimizer for updating model parameters.
+        loss_fn (torch.nn.Module): The loss function.
+        epoch (int): The current epoch number.
+
+    Returns:
+        float: The average training loss for the epoch.
+    """
+    model.train()
+    train_loss = 0
+    for batch, (X, y) in enumerate(
+        tqdm(train_loader, desc=f"Training epoch {epoch+1}")
+    ):
+        X, y = X.to(device), y.to(device)
+
+        # Forward pass
+        y_pred = model(X)
+        loss = loss_fn(y_pred, y)
+        train_loss += loss.item()
+
+        # Backward pass and optimization
         optimizer.zero_grad()
-        outputs = model_0(images)
-        loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
-        train_loss += loss.item() * images.size(0)
-        _, predicted = torch.max(outputs.data, 1)
-        train_total += labels.size(0)
-        train_correct += (predicted == labels).sum().item()
 
-    train_loss /= len(train_loader.dataset)
-    train_accuracy = 100 * train_correct / train_total
-    print(f"Epoch {epoch+1}, Training Loss: {train_loss:.4f}, Training Accuracy: {train_accuracy:.2f}%")
+    avg_train_loss = train_loss / len(train_loader)
+    return avg_train_loss
 
-    model_0.eval()
-    valid_loss = 0.0
-    valid_correct = 0
-    valid_total = 0
+
+# Function to evaluate the model
+def eval_model(model, data_loader, loss_fn, accuracy_fn):
+    """
+    Evaluates the model on the given data_loader.
+
+    Args:
+        model (torch.nn.Module): The model to be evaluated.
+        data_loader (torch.utils.data.DataLoader): The data loader for validation data.
+        loss_fn (torch.nn.Module): The loss function.
+        accuracy_fn: Function to compute accuracy.
+
+    Returns:
+        dict: A dictionary with validation loss and accuracy.
+    """
+    model.eval()
+    valid_loss, valid_acc = 0, 0
     with torch.no_grad():
-        for images, labels in valid_loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model_0(images)
-            loss = criterion(outputs, labels)
-            valid_loss += loss.item() * images.size(0)
-            _, predicted = torch.max(outputs.data, 1)
-            valid_total += labels.size(0)
-            valid_correct += (predicted == labels).sum().item()
+        for X, y in tqdm(data_loader, desc="Evaluating"):
+            X, y = X.to(device), y.to(device)
+            y_pred = model(X)
+            valid_loss += loss_fn(y_pred, y).item()
+            valid_acc += accuracy_fn(y_true=y, y_pred=y_pred.argmax(dim=1))
 
-    valid_loss /= len(valid_loader.dataset)
-    valid_accuracy = 100 * valid_correct / valid_total
-    print(f"Epoch {epoch+1}, Validation Loss: {valid_loss:.4f}, Validation Accuracy: {valid_accuracy:.2f}%")
+    avg_valid_loss = valid_loss / len(data_loader)
+    avg_valid_acc = valid_acc / len(data_loader)
+
+    return {"model_loss": avg_valid_loss, "model_acc": avg_valid_acc}
 
 
+# Function to train and evaluate the model across epochs
+def train_and_evaluate(
+    model, train_loader, valid_loader, optimizer, loss_fn, accuracy_fn, num_epochs
+):
+    """
+    Trains and evaluates the model for a specified number of epochs.
+
+    Args:
+        model (torch.nn.Module): The model to train and evaluate.
+        train_loader (torch.utils.data.DataLoader): The data loader for training data.
+        valid_loader (torch.utils.data.DataLoader): The data loader for validation data.
+        optimizer (torch.optim.Optimizer): The optimizer for training the model.
+        loss_fn (torch.nn.Module): The loss function.
+        accuracy_fn: Function to compute accuracy.
+        num_epochs (int): The number of epochs for training.
+
+    Returns:
+        None
+    """
+    for epoch in range(num_epochs):
+        start_time = time.time()
+        print(f"Epoch {epoch+1}/{num_epochs}")
+
+        # Train the model
+        avg_train_loss = train_model(model, train_loader, optimizer, loss_fn, epoch)
+        print(f"Train loss: {avg_train_loss:.4f}")
+
+        # Evaluate the model
+        valid_results = eval_model(model, valid_loader, loss_fn, accuracy_fn)
+        print(
+            f"Validation loss: {valid_results['model_loss']:.4f}, Validation accuracy: {valid_results['model_acc']:.2f}%"
+        )
+
+        # Time taken for the epoch
+        epoch_duration = time.time() - start_time
+        print(f"Epoch {epoch+1} completed in {epoch_duration:.2f} seconds")
+        print("-" * 50)
 
 
-
-
-# # Model definition
-# class CustomCNN(nn.Module):
-#     def __init__(self, num_layers, hidden_units, num_classes):
-#         super(CustomCNN, self).__init__()
-#         self.features = self._make_layers(num_layers, hidden_units)
-#         in_features = hidden_units[-1] * (224 // 2**num_layers) ** 2
-#         self.classifier = nn.Linear(in_features, num_classes)
-
-#     def forward(self, x):
-#         x = self.features(x)
-#         x = torch.flatten(x, 1)
-#         x = self.classifier(x)
-#         return x
-
-#     def _make_layers(self, num_layers, hidden_units):
-#         layers = []
-#         in_channels = 3
-#         for i in range(num_layers):
-#             layers += [
-#                 nn.Conv2d(in_channels, hidden_units[i], kernel_size=3, padding=1),
-#                 nn.BatchNorm2d(hidden_units[i]),
-#                 nn.ReLU(inplace=True),
-#                 nn.MaxPool2d(kernel_size=2, stride=2),
-#             ]
-#             in_channels = hidden_units[i]
-#         return nn.Sequential(*layers)
-
-
-# # Model instantiation
-# num_classes = len(train_data.classes)
-# model = CustomCNN(
-#     num_layers=5, hidden_units=[32, 64, 128, 256, 512], num_classes=num_classes
-# ).to(device)
-
-# # Loss and optimizer
-# criterion = nn.CrossEntropyLoss()
-# optimizer = optim.Adam(model.parameters(), lr=0.001)
-# scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
-
-# from torch.utils.tensorboard import SummaryWriter
-
-# # default `log_dir` is "runs" - we'll be more specific here
-# writer = SummaryWriter("runs/fashion_mnist_experiment_1")
-
-
-# # Early stopping
-# class EarlyStopping:
-#     def __init__(self, patience=1, min_delta=0.0):
-#         self.patience = patience
-#         self.min_delta = min_delta
-#         self.counter = 0
-#         self.best_loss = None
-#         self.early_stop = False
-
-#     def __call__(self, val_loss):
-#         if self.best_loss is None:
-#             self.best_loss = val_loss
-#         elif val_loss > self.best_loss - self.min_delta:
-#             self.counter += 1
-#             if self.counter >= self.patience:
-#                 self.early_stop = True
-#         else:
-#             self.best_loss = val_loss
-#             self.counter = 0
-
-
-# # Training loop
-# def train(
-#     model, train_loader, valid_loader, criterion, optimizer, scheduler, n_epochs, device
-# ):
-#     early_stopping = EarlyStopping(patience=3, min_delta=0.0)
-#     train_losses = [[], []]
-#     train_accuracies = [[], []]
-#     for epoch in range(n_epochs):
-#         print(f"Epoch {epoch + 1}\n-------------------------------")
-#         model.train()
-#         train_loss = 0.0
-#         train_correct = 0
-#         train_total = 0
-#         for images, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
-#             images, labels = images.to(device), labels.to(device)
-#             optimizer.zero_grad()
-#             outputs = model(images)
-#             loss = criterion(outputs, labels)
-#             loss.backward()
-#             optimizer.step()
-#             train_loss += loss.item() * images.size(0)
-#             _, predicted = torch.max(outputs.data, 1)
-#             train_total += labels.size(0)
-#             train_correct += (predicted == labels).sum().item()
-
-#         train_loss /= len(train_loader.dataset)
-#         train_losses[0].append(train_loss)
-#         train_accuracy = 100 * train_correct / train_total
-#         train_accuracies[0].append(train_accuracy)
-
-#         model.eval()
-#         valid_loss = 0.0
-#         valid_correct = 0
-#         valid_total = 0
-#         with torch.no_grad():
-#             for images, labels in valid_loader:
-#                 images, labels = images.to(device), labels.to(device)
-#                 outputs = model(images)
-#                 loss = criterion(outputs, labels)
-#                 valid_loss += loss.item() * images.size(0)
-#                 _, predicted = torch.max(outputs.data, 1)
-#                 valid_total += labels.size(0)
-#                 valid_correct += (predicted == labels).sum().item()
-
-#         valid_loss /= len(valid_loader.dataset)
-#         train_losses[1].append(valid_loss)
-#         valid_accuracy = 100 * valid_correct / valid_total
-#         train_accuracies[1].append(valid_accuracy)
-
-#         print(
-#             f"Epoch {epoch+1}, Training Loss: {train_loss:.4f}, Validation Loss: {valid_loss:.4f}"
-#         )
-#         print(
-#             f"Epoch {epoch+1}, Training Accuracy: {train_accuracy:.2f}%, Validation Accuracy: {valid_accuracy:.2f}%"
-#         )
-
-#         early_stopping(valid_loss)
-#         if early_stopping.early_stop:
-#             print("Early stopping triggered")
-#             break
-
-#         scheduler.step()
-
-#     return model, train_losses, train_accuracies
-
-
-# model, losses, accuracies = train(
-#     model,
-#     train_loader,
-#     valid_loader,
-#     criterion,
-#     optimizer,
-#     scheduler,
-#     n_epochs=20,
-#     device=device,
-# )
-
-# # Plotting training and validation losses and accuracies
-# plt.figure(figsize=(15, 10))
-# plt.subplot(1, 2, 1)
-# plt.plot(losses[0], label="Training loss")
-# plt.plot(losses[1], label="Validation loss")
-# plt.title("Training and Validation Loss")
-# plt.xlabel("Epoch")
-# plt.ylabel("Loss")
-# plt.legend()
-
-# plt.subplot(1, 2, 2)
-# plt.plot(accuracies[0], label="Training accuracy")
-# plt.plot(accuracies[1], label="Validation accuracy")
-# plt.title("Training and Validation Accuracy")
-# plt.xlabel("Epoch")
-# plt.ylabel("Accuracy")
-# plt.legend()
-# plt.savefig("../../reports/figures/model_training_performance.pdf")
-# plt.show()
-
-
-# def evaluate_model_performance(model, data_loader, device):
-#     model.eval()
-#     all_preds, all_labels = [], []
-#     with torch.no_grad():
-#         for images, labels in data_loader:
-#             images, labels = images.to(device), labels.to(device)
-#             outputs = model(images)
-#             _, preds = torch.max(outputs, 1)
-#             all_preds.extend(preds.view(-1).cpu().numpy())
-#             all_labels.extend(labels.cpu().numpy())
-
-#     accuracy = accuracy_score(all_labels, all_preds)
-#     precision = precision_score(all_labels, all_preds, average="macro")
-#     recall = recall_score(all_labels, all_preds, average="macro")
-#     f1 = f1_score(all_labels, all_preds, average="macro")
-#     print(
-#         f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}"
-#     )
-
-
-# evaluate_model_performance(model, valid_loader, device)
-
-
-# # Visualizing predictions make it a plot side by side with the probability of the prediction. make the plot good enough to be saved as an image for my research paper
-# path_test = "../../data/raw/"
-
-# # test images transformation
-# # transform = transforms.Compose(
-# #     [
-# #         transforms.Resize((224, 224)),
-# #         transforms.ToTensor(),
-# #         # transforms.Normalize(
-# #         #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-# #         # ),
-# #     ]
-# # )
-
-# test_data = datasets.ImageFolder(path_test, transform=transform)
-
-# test_loader = DataLoader(test_data, batch_size=32)
-
-
-# def show_predictions(model, data_loader, device, class_names):
-#     model.eval()
-#     with torch.no_grad():
-#         for images, labels in data_loader:
-#             images, labels = images.to(device), labels.to(device)
-#             outputs = model(images)
-#             _, preds = torch.max(outputs, 1)
-#             probs = F.softmax(outputs, dim=1)
-#             fig, axes = plt.subplots(2, 5, figsize=(25, 10))
-#             for i, ax in enumerate(axes.flat):
-#                 ax.imshow(images[i].permute(1, 2, 0).cpu().numpy())
-#                 ax.axis("off")
-#                 pred_label = class_names[preds[i]]
-#                 pred_prob = probs[i][preds[i]] * 100
-#                 ax.set_title(f"Prediction: {pred_label}\nProbability: {pred_prob:.2f}%")
-#             plt.tight_layout()
-#             plt.savefig("../../reports/figures/custom_model_predictions.pdf")
-#             plt.show()
-#             break
-
-
-# show_predictions(model, test_loader, device, train_data.classes)
-
-
-# # Save the model
-# torch.save(model.state_dict(), "../../models/plant_disease_model.pth")
-
-# # load the saved trained model
-
-# model = torch.load("../../models/plant_disease_model.pth")
+# Start training and evaluation
+train_and_evaluate(
+    model=model,
+    train_loader=train_loader,
+    valid_loader=valid_loader,
+    optimizer=optimizer,
+    loss_fn=loss_fn,
+    accuracy_fn=accuracy_fn,
+    num_epochs=NUM_EPOCHS,
+)
