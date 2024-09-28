@@ -1,509 +1,249 @@
+# ================================================================
+# Import Necessary Libraries
+# ================================================================
 import os
+import sys
+import numpy as np
 import pandas as pd
-from torchvision import datasets, transforms
-from torch.utils.data import Dataset, DataLoader
-import torch
-import torch.nn as nn
-import torchvision.models as models
-import torch.optim as optim
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from tqdm.auto import tqdm
 from zipfile import ZipFile
-# from helper_functions import *
+from PIL import Image
 
-# Unzipping the dataset
-# with ZipFile("../../new-plant-diseases-dataset.zip", "r") as zip_ref:
-#     zip_ref.extractall("../../data/raw")
-    
-# with ZipFile("../../plant-village-dataset-updated.zip", "r") as zip_ref:
-#     zip_ref.extractall("../../data/raw/plant-village-dataset-updated")
-    
+import torch
+from torch.utils.data import Dataset, DataLoader
+from torchvision import datasets, transforms
 
+# Ensure the helper functions and settings are imported
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+from helper_functions import set_seeds
 
-data_path = "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/"
-train_dir = os.path.join(data_path, "train")
-valid_dir = os.path.join(data_path, "valid")
+# ================================================================
+# Configuration and Settings
+# ================================================================
+# Set seeds for reproducibility
+set_seeds(42)
 
-# Extracting disease folders from the training directory
-diseases = os.listdir(train_dir)
+# Hyperparameters and configuration setup
+HEIGHT, WIDTH = 224, 224  # Image dimensions
 
-plant_names = []
-disease_names = []
-healthy_labels = []
+# Directory paths
+RAW_DATA_PATH = "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/"
+PROCESSED_DATA_PATH = "../../data/processed/"
+TRAIN_DIR = os.path.join(RAW_DATA_PATH, "train")
+VALID_DIR = os.path.join(RAW_DATA_PATH, "valid")
 
-# Separating plant names and disease names, including a separate category for 'healthy'
-for disease_folder in diseases:
-    parts = disease_folder.split("___")
-    plant = parts[0]
-    disease = (
-        parts[1] if len(parts) > 1 else "Healthy"
-    )  # Assumes disease label is present or assigns 'Healthy'
+# Create directories if they don't exist
+if not os.path.exists(PROCESSED_DATA_PATH):
+    os.makedirs(PROCESSED_DATA_PATH)
 
-    if plant not in plant_names:
-        plant_names.append(plant)
+# ================================================================
+# Data Preparation
+# ================================================================
+def create_dataframes(train_dir, valid_dir):
+    """
+    Creates dataframes containing image paths and labels for training and validation datasets.
+    """
+    # Initialize lists to store data
+    data_entries = []
 
-    if disease == "Healthy":
-        healthy_labels.append(
-            f"{plant}___Healthy"
-        )  # Keeping track of healthy labels for disease detection
-    elif disease not in disease_names:
-        disease_names.append(disease)
+    # Loop through train and valid directories
+    for split, directory in [("train", train_dir), ("valid", valid_dir)]:
+        # Get all disease folders
+        disease_folders = os.listdir(directory)
 
-# Count the number of images for each disease in the dataset
-disease_count = {}
-for disease_folder in diseases:
-    disease_path = os.path.join(train_dir, disease_folder)
-    disease_count[disease_folder] = len(os.listdir(disease_path))
+        for folder_name in disease_folders:
+            folder_path = os.path.join(directory, folder_name)
+            images = os.listdir(folder_path)
 
-# Convert the disease_count dictionary to a pandas DataFrame for better analysis and visualization
-disease_count_df = pd.DataFrame(
-    disease_count.values(), index=disease_count.keys(), columns=["no_of_images"]
+            # Extract plant and disease names
+            if "___" in folder_name:
+                plant, disease = folder_name.split("___")
+            else:
+                plant = folder_name
+                disease = "Healthy"
+
+            # Loop through all images in the folder
+            for img_name in images:
+                img_path = os.path.join(folder_path, img_name)
+                data_entries.append(
+                    {
+                        "split": split,
+                        "image_path": img_path,
+                        "plant": plant,
+                        "disease": disease,
+                        "is_healthy": disease == "Healthy",
+                    }
+                )
+
+    # Create DataFrame
+    data_df = pd.DataFrame(data_entries)
+    return data_df
+
+# Create DataFrames for train and validation data
+data_df = create_dataframes(TRAIN_DIR, VALID_DIR)
+
+# Display the first few rows
+print("Data DataFrame:")
+print(data_df.head())
+
+# ================================================================
+# Label Encoding
+# ================================================================
+def encode_labels(data_df):
+    """
+    Encodes categorical labels into numeric labels for model training.
+    """
+    # Encode 'plant' labels
+    plant_types = data_df["plant"].unique()
+    plant_to_idx = {plant: idx for idx, plant in enumerate(plant_types)}
+    idx_to_plant = {idx: plant for plant, idx in plant_to_idx.items()}
+    data_df["plant_label"] = data_df["plant"].map(plant_to_idx)
+
+    # Encode 'disease' labels
+    disease_types = data_df["disease"].unique()
+    disease_to_idx = {disease: idx for idx, disease in enumerate(disease_types)}
+    idx_to_disease = {idx: disease for disease, idx in disease_to_idx.items()}
+    data_df["disease_label"] = data_df["disease"].map(disease_to_idx)
+
+    # Encode 'is_healthy' labels (already boolean, convert to int)
+    data_df["healthy_label"] = data_df["is_healthy"].astype(int)
+
+    # Save label mappings for future reference
+    label_mappings = {
+        "plant_to_idx": plant_to_idx,
+        "idx_to_plant": idx_to_plant,
+        "disease_to_idx": disease_to_idx,
+        "idx_to_disease": idx_to_disease,
+    }
+
+    return data_df, label_mappings
+
+# Encode labels
+data_df, label_mappings = encode_labels(data_df)
+
+# Display label mappings
+print("\nLabel Mappings:")
+print("Plant to Index:", label_mappings["plant_to_idx"])
+print("Disease to Index:", label_mappings["disease_to_idx"])
+
+# Save label mappings to a JSON file for future use
+import json
+
+with open(os.path.join(PROCESSED_DATA_PATH, "label_mappings.json"), "w") as f:
+    json.dump(label_mappings, f)
+
+# ================================================================
+# Data Visualization (Optional)
+# ================================================================
+# You can create plots to visualize the distribution of classes if needed.
+
+# ================================================================
+# Custom Dataset Class
+# ================================================================
+class PlantDiseaseDataset(Dataset):
+    def __init__(self, data_df, transform=None):
+        """
+        Custom dataset for plant disease classification that handles
+        - Crop Type Classification
+        - Disease Detection (Healthy vs Diseased)
+        - Disease Type Classification
+
+        Args:
+            data_df (pd.DataFrame): DataFrame containing image paths and labels.
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.data_df = data_df.reset_index(drop=True)
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.data_df)
+
+    def __getitem__(self, idx):
+        # Get image path and labels
+        img_path = self.data_df.loc[idx, "image_path"]
+        plant_label = self.data_df.loc[idx, "plant_label"]
+        disease_label = self.data_df.loc[idx, "disease_label"]
+        healthy_label = self.data_df.loc[idx, "healthy_label"]
+
+        # Load image
+        image = Image.open(img_path).convert("RGB")
+
+        # Apply transformations
+        if self.transform:
+            image = self.transform(image)
+
+        # Create label dictionary
+        labels = {
+            "crop_type": torch.tensor(plant_label, dtype=torch.long),
+            "disease": torch.tensor(disease_label, dtype=torch.long),
+            "healthy": torch.tensor(healthy_label, dtype=torch.float32),
+        }
+
+        return image, labels
+
+# ================================================================
+# Data Transformations
+# ================================================================
+# Define image transformations
+transform = transforms.Compose(
+    [
+        transforms.Resize((HEIGHT, WIDTH)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
 )
 
-print(f"Number of unique plants: {len(plant_names)}")
-print(f"Number of unique diseases (excluding healthy): {len(disease_names)}")
-print(f"Total classes (including healthy labels per plant): {len(diseases)}")
-
-# Optionally, display the DataFrame for analysis
-print(disease_count_df)
-
-# Create a dataframe for counting how many images are available for each crop and disease in the training and validation
-diseases = os.listdir(train_dir)
-train_data = []
-valid_data = []
-
-for disease in diseases:
-    train_data.append(
-        {
-            "plant": disease.split("___")[0],
-            "disease": disease.split("___")[1],
-            "no_of_images": len(os.listdir(os.path.join(train_dir, disease))),
-        }
-    )
-
-    valid_data.append(
-        {
-            "plant": disease.split("___")[0],
-            "disease": disease.split("___")[1],
-            "no_of_images": len(os.listdir(os.path.join(valid_dir, disease))),
-        }
-    )
-
-train_data = pd.DataFrame(train_data)
-valid_data = pd.DataFrame(valid_data)
-
-train_data = train_data.groupby(["plant", "disease"]).sum().reset_index()
-valid_data = valid_data.groupby(["plant", "disease"]).sum().reset_index()
-
-train_data["data"] = "train"
-valid_data["data"] = "valid"
-
-data = pd.concat([train_data, valid_data])
-
-data = data.pivot(
-    index=["plant", "disease"], columns="data", values="no_of_images"
-).reset_index()
-
-data = data.fillna(0)
-
-data["total_images"] = data.train + data.valid
-
-data = data.sort_values(by="total_images", ascending=False)
-
-data = data.reset_index(drop=True)
-
-data.to_csv("../../data/processed/data.csv", index=False)
-
-
-# class PlantDiseaseDataset(Dataset):
-#     def __init__(self, data_dir, transform=None):
-#         """
-#         Custom dataset for plant disease classification that handles
-#         - Crop Type Classification
-#         - Disease Detection (Healthy vs Diseased)
-#         - Disease Type Classification
-#         """
-#         self.data_dir = data_dir
-#         self.transform = transform
-#         self.data = []
-#         self.labels = {"crop_type": [], "disease": [], "healthy": []}
-#         self.class_to_idx = {
-#             "crop_type": {},
-#             "disease": {},
-#             "healthy": {True: 1, False: 0},
-#         }
-#         self.idx_to_class = {
-#             "crop_type": {},
-#             "disease": {},
-#             "healthy": {1: True, 0: False},
-#         }
-
-#         self._prepare_dataset()
-
-#     def _prepare_dataset(self):
-#         disease_folders = os.listdir(self.data_dir)
-#         for folder_name in disease_folders:
-#             folder_path = os.path.join(self.data_dir, folder_name)
-#             images = os.listdir(folder_path)
-#             plant, disease = folder_name.split("___")
-
-#             if plant not in self.class_to_idx["crop_type"]:
-#                 self.class_to_idx["crop_type"][plant] = len(
-#                     self.class_to_idx["crop_type"]
-#                 )
-#                 self.idx_to_class["crop_type"][
-#                     len(self.idx_to_class["crop_type"])
-#                 ] = plant
-
-#             if disease not in self.class_to_idx["disease"]:
-#                 self.class_to_idx["disease"][disease] = len(
-#                     self.class_to_idx["disease"]
-#                 )
-#                 self.idx_to_class["disease"][
-#                     len(self.idx_to_class["disease"])
-#                 ] = disease
-
-#             for img in images:
-#                 img_path = os.path.join(folder_path, img)
-#                 self.data.append(img_path)
-#                 self.labels["crop_type"].append(self.class_to_idx["crop_type"][plant])
-#                 self.labels["disease"].append(self.class_to_idx["disease"][disease])
-#                 self.labels["healthy"].append(1 if disease == "Healthy" else 0)
-
-#     def __len__(self):
-#         return len(self.data)
-
-#     def __getitem__(self, idx):
-#         img_path = self.data[idx]
-#         img = datasets.folder.default_loader(
-#             img_path
-#         )  # Default loader handles image opening and conversion to RGB
-#         if self.transform:
-#             img = self.transform(img)
-
-#         labels = {
-#             "crop_type": torch.tensor(self.labels["crop_type"][idx]),
-#             "disease": torch.tensor(self.labels["disease"][idx]),
-#             "healthy": torch.tensor(self.labels["healthy"][idx], dtype=torch.float),
-#         }
-
-#         return img, labels
-
-
-# transform = transforms.Compose(
-#     [
-#         transforms.Resize((224, 224)),
-#         transforms.ToTensor(),
-#         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-#     ]
-# )
-
-# train_dataset = PlantDiseaseDataset(train_dir, transform=transform)
-# valid_dataset = PlantDiseaseDataset(valid_dir, transform=transform)
-
-# # Example DataLoader setup
-# train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-# valid_loader = DataLoader(valid_dataset, batch_size=32)
-
-# # To access the mapping back from indices to class names
-# print(train_dataset.idx_to_class)
-
-
-# class MultiTaskCNN(nn.Module):
-#     def __init__(self, num_crop_types, num_diseases):
-#         super(MultiTaskCNN, self).__init__()
-
-#         # Load a pre-trained model as feature extractor
-#         # Here, we use ResNet50, but you can choose a different model like EfficientNet
-#         self.feature_extractor = models.resnet50(pretrained=True)
-
-#         # Remove the last layer (fully connected layer) of the feature extractor
-#         num_features = self.feature_extractor.fc.in_features
-#         self.feature_extractor.fc = nn.Identity()
-
-#         # Task-specific layers
-#         # Crop classification head
-#         self.crop_head = nn.Sequential(
-#             nn.Linear(num_features, 512),
-#             nn.ReLU(inplace=True),
-#             nn.Dropout(0.2),
-#             nn.Linear(512, num_crop_types),
-#         )
-
-#         # Disease detection head (binary classification: healthy vs diseased)
-#         self.disease_detection_head = nn.Sequential(
-#             nn.Linear(num_features, 256),
-#             nn.ReLU(inplace=True),
-#             nn.Dropout(0.2),
-#             nn.Linear(256, 1),
-#             nn.Sigmoid(),
-#         )
-
-#         # Disease classification head
-#         self.disease_classification_head = nn.Sequential(
-#             nn.Linear(num_features, 512),
-#             nn.ReLU(inplace=True),
-#             nn.Dropout(0.2),
-#             nn.Linear(512, num_diseases),
-#         )
-
-#     def forward(self, x):
-#         # Shared feature extraction
-#         x = self.feature_extractor(x)
-
-#         # Task-specific predictions
-#         crop_pred = self.crop_head(x)
-#         disease_detection_pred = self.disease_detection_head(x)
-#         disease_classification_pred = self.disease_classification_head(x)
-
-#         return crop_pred, disease_detection_pred, disease_classification_pred
-
-
-# class MultiTaskLoss(nn.Module):
-#     def __init__(
-#         self,
-#         weight_crop=1.0,
-#         weight_disease_detection=1.0,
-#         weight_disease_classification=1.0,
-#     ):
-#         super(MultiTaskLoss, self).__init__()
-#         self.weight_crop = weight_crop
-#         self.weight_disease_detection = weight_disease_detection
-#         self.weight_disease_classification = weight_disease_classification
-#         self.loss_crop = nn.CrossEntropyLoss()
-#         self.loss_disease_detection = nn.BCELoss()
-#         self.loss_disease_classification = nn.CrossEntropyLoss()
-
-#     def forward(self, outputs, targets):
-#         # Unpack the outputs and targets
-#         crop_pred, disease_detection_pred, disease_classification_pred = outputs
-#         crop_target, disease_detection_target, disease_classification_target = (
-#             targets["crop_type"],
-#             targets["healthy"],
-#             targets["disease"],
-#         )
-
-#         # Calculate individual losses
-#         loss_crop = self.loss_crop(crop_pred, crop_target)
-#         loss_disease_detection = self.loss_disease_detection(
-#             disease_detection_pred.view(-1), disease_detection_target
-#         )
-#         loss_disease_classification = self.loss_disease_classification(
-#             disease_classification_pred, disease_classification_target
-#         )
-
-#         # Weighted sum of the individual losses
-#         total_loss = (
-#             self.weight_crop * loss_crop
-#             + self.weight_disease_detection * loss_disease_detection
-#             + self.weight_disease_classification * loss_disease_classification
-#         )
-
-#         return total_loss
-
-
-# # create a function that times the experiments, how fast it runs on the GPU
-# def time_model(model, data_loader, device):
-#     model.eval()
-#     start = torch.cuda.Event(enable_timing=True)
-#     end = torch.cuda.Event(enable_timing=True)
-#     start.record()
-#     for inputs, labels in data_loader:
-#         inputs = inputs.to(device)
-#         labels = {task: labels[task].to(device) for task in labels}
-#         outputs = model(inputs)
-#     end.record()
-#     torch.cuda.synchronize()
-#     print(f"Model took {start.elapsed_time(end):.3f} milliseconds to process the data.")        
-#     return start.elapsed_time(end)  
-
-
-
-# class EarlyStopping:
-#     def __init__(self, patience=5, min_delta=0.0):
-#         self.patience = patience
-#         self.min_delta = min_delta
-#         self.counter = 0
-#         self.best_score = None
-#         self.early_stop = False
-
-#     def __call__(self, val_loss):
-#         if self.best_score is None:
-#             self.best_score = val_loss
-#         elif val_loss > self.best_score + self.min_delta:
-#             self.counter += 1
-#             if self.counter >= self.patience:
-#                 self.early_stop = True
-#         else:
-#             self.best_score = val_loss
-#             self.counter = 0    # Reset the counter
-
-# # Device configuration for training on GPU if available. two GPUs are available make use of both of them
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-# # Model instantiation
-# num_crop_types = len(plant_names)
-# num_diseases = len(disease_names) + 1  # Including 'Healthy' as a type of 'disease'
-# model = MultiTaskCNN(num_crop_types, num_diseases).to(device)
-
-# # Loss function and optimizer
-# criterion = MultiTaskLoss().to(device)
-# optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
-# scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
-
-# # create a training loop function that trains the model on batches of data (training and validation). calculate the loss and accuracy of the model per batch. print out what is happening in the training loop
-# def train_model(model, criterion, optimizer, scheduler, train_loader, valid_loader, device, num_epochs=10):     
-#     train_losses = []
-#     val_losses = []
-#     train_accuracies = []
-#     val_accuracies = []
-#     early_stopping = EarlyStopping(patience=5, min_delta=0.0)
-#     for epoch in range(num_epochs):
-#         model.train()
-#         train_loss = 0.0
-#         correct = 0
-#         total = 0
-#         for inputs, labels in tqdm(train_loader):
-#             inputs = inputs.to(device)
-#             labels = {task: labels[task].to(device) for task in labels}
-
-#             optimizer.zero_grad()
-#             outputs = model(inputs)
-#             loss = criterion(outputs, labels)
-#             loss.backward()
-#             optimizer.step()
-
-#             train_loss += loss.item()
-
-#             crop_pred, _, _ = outputs
-#             _, crop_pred = crop_pred.max(1)
-#             correct += crop_pred.eq(labels["crop_type"]).sum().item()
-#             total += inputs.size(0)
-
-#         train_losses.append(train_loss / len(train_loader))
-#         train_accuracy = correct / total
-#         train_accuracies.append(train_accuracy)
-
-#         val_loss = 0.0
-#         correct = 0
-#         total = 0
-#         model.eval()
-#         with torch.no_grad():
-#             for inputs, labels in valid_loader:
-#                 inputs = inputs.to(device)
-#                 labels = {task: labels[task].to(device) for task in labels}
-
-#                 outputs = model(inputs)
-#                 loss = criterion(outputs, labels)
-#                 val_loss += loss.item()
-
-#                 crop_pred, _, _ = outputs
-#                 _, crop_pred = crop_pred.max(1)
-#                 correct += crop_pred.eq(labels["crop_type"]).sum().item()
-#                 total += inputs.size(0)
-
-#         val_losses.append(val_loss / len(valid_loader))
-#         val_accuracy = correct / total
-#         val_accuracies.append(val_accuracy)
-
-#         print(
-#             f"Epoch {epoch+1}/{num_epochs}, "
-#             f"Train Loss: {train_loss / len(train_loader):.4f}, "
-#             f"Train Accuracy: {train_accuracy:.2f}, "
-#             f"Val Loss: {val_loss / len(valid_loader):.4f}, "
-#             f"Val Accuracy: {val_accuracy:.2f}"
-#         )
-
-#         scheduler.step(val_loss)
-
-#         early_stopping(val_loss)
-#         if early_stopping.early_stop:
-#             print("Early stopping")
-#             break
-
-#     return model, train_losses, val_losses, train_accuracies, val_accuracies
-
-
-# # plot the training and validation losses
-# plt.figure(figsize=(10, 6))
-# plt.plot(train_losses, label="Training Loss", color="skyblue")
-# plt.plot(val_losses, label="Validation Loss", color="orange")
-# plt.xlabel("Epoch")
-# plt.ylabel("Loss")
-# plt.title("Training and Validation Loss")
-# plt.legend()
-# plt.grid(True)
-# plt.savefig("../../reports/figures/losses.png")
-# plt.show()
-
-# # plot the training and validation accuracies
-# plt.figure(figsize=(10, 6))
-# plt.plot(train_accuracies, label="Training Accuracy", color="skyblue")
-# plt.plot(val_accuracies, label="Validation Accuracy", color="orange")
-# plt.xlabel("Epoch")
-# plt.ylabel("Accuracy (%)")
-# plt.title("Training and Validation Accuracy")
-# plt.legend()
-# plt.grid(True)
-# plt.savefig("../../reports/figures/accuracies.png")
-# plt.show()
-
-# # evaluate the model
-# def evaluate(model, data_loader, device):
-#     model.eval()
-#     correct = 0
-#     total = 0
-#     predictions = []
-#     targets = []
-
-#     with torch.no_grad():
-#         for inputs, labels in data_loader:
-#             inputs = inputs.to(device)
-#             labels = {task: labels[task].to(device) for task in labels}
-
-#             outputs = model(inputs)
-
-#             crop_pred, _, _ = outputs
-#             _, crop_pred = crop_pred.max(1)
-#             correct += crop_pred.eq(labels["crop_type"]).sum().item()
-#             total += inputs.size(0)
-
-#             predictions.extend(crop_pred.tolist())
-#             targets.extend(labels["crop_type"].tolist())
-
-#     accuracy = correct / total
-#     return accuracy, predictions, targets
-
-
-# train_accuracy, train_predictions, train_targets = evaluate(model, train_loader, device)
-
-# valid_accuracy, valid_predictions, valid_targets = evaluate(model, valid_loader, device)
-
-# print(f"Training Accuracy: {train_accuracy:.2f}")
-# print(f"Validation Accuracy: {valid_accuracy:.2f}")
-
-# # Calculate additional evaluation metrics
-# train_precision = precision_score(train_targets, train_predictions, average="macro")
-# train_recall = recall_score(train_targets, train_predictions, average="macro")
-# train_f1 = f1_score(train_targets, train_predictions, average="macro")
-
-# valid_precision = precision_score(valid_targets, valid_predictions, average="macro")
-# valid_recall = recall_score(valid_targets, valid_predictions, average="macro")
-# valid_f1 = f1_score(valid_targets, valid_predictions, average="macro")
-
-# print(
-#     f"Training Precision: {train_precision:.2f}, Recall: {train_recall:.2f}, F1 Score: {train_f1:.2f}"
-# )
-# print(
-#     f"Validation Precision: {valid_precision:.2f}, Recall: {valid_recall:.2f}, F1 Score: {valid_f1:.2f}"
-# )
-
-
-# # Visualizing predictions make it a plot side by side with the probability of the prediction. make the plot good enough to be saved as an image for my research paper
-
-
-
-# # Save the model
-    
+# ================================================================
+# Creating Dataset Instances
+# ================================================================
+# Split data into training and validation DataFrames
+train_df = data_df[data_df["split"] == "train"].reset_index(drop=True)
+valid_df = data_df[data_df["split"] == "valid"].reset_index(drop=True)
+
+# Create dataset instances
+train_dataset = PlantDiseaseDataset(train_df, transform=transform)
+valid_dataset = PlantDiseaseDataset(valid_df, transform=transform)
+
+# ================================================================
+# Creating Data Loaders
+# ================================================================
+# Parameters
+BATCH_SIZE = 32
+NUM_WORKERS = 8  # Adjust based on your system
+
+# Create data loaders
+train_loader = DataLoader(
+    train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True
+)
+valid_loader = DataLoader(
+    valid_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True
+)
+
+# ================================================================
+# Testing the Dataset and DataLoader
+# ================================================================
+# Fetch a batch of data to test
+data_iter = iter(train_loader)
+images, labels = next(data_iter)
+
+print(f"\nBatch of images shape: {images.shape}")
+print(f"Batch of labels: {labels}")
+
+# ================================================================
+# Saving the Prepared Dataset (Optional)
+# ================================================================
+# If you wish to save the prepared dataset indices for reproducibility
+train_indices = train_df.index.tolist()
+valid_indices = valid_df.index.tolist()
+
+np.save(os.path.join(PROCESSED_DATA_PATH, "train_indices.npy"), train_indices)
+np.save(os.path.join(PROCESSED_DATA_PATH, "valid_indices.npy"), valid_indices)
+
+# ================================================================
+# Summary
+# ================================================================
+print("\nDataset Preparation Complete!")
+print(f"Number of training samples: {len(train_dataset)}")
+print(f"Number of validation samples: {len(valid_dataset)}")
+print(f"Number of crop types: {len(label_mappings['plant_to_idx'])}")
+print(f"Number of diseases: {len(label_mappings['disease_to_idx'])}")
