@@ -236,7 +236,7 @@ with torch.no_grad():
 
 ## Project Structure
 
-```kotlin
+```plaintext
 ├── data
 │   ├── processed
 │   └── raw
@@ -277,8 +277,6 @@ This project is licensed under the MIT License.
 
 - The dataset was sourced from Kaggle.
 - Inspiration and guidance from the deep learning community and various online resources.
-- Contact: For any questions or inquiries, please contact your_email@example.com.
+- Contact: For any questions or inquiries, please contact ajaoolarinoyemichael@gmail.com.
 
 Repository: [https://github.com/michaelajao/plant_disease_dl](https://github.com/michaelajao/plant_disease_dl)
-
-Email: ajaoolarinoyemichael@gmail.com
