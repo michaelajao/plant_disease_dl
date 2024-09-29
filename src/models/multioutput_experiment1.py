@@ -7,7 +7,6 @@ import time
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
-from zipfile import ZipFile
 
 import torch
 import torch.nn as nn
@@ -24,6 +23,9 @@ from sklearn.metrics import (
     f1_score,
     confusion_matrix,
 )
+
+# Import timm for Vision Transformer
+import timm
 
 # Ensure the helper functions and settings are imported
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
@@ -66,10 +68,6 @@ if not os.path.exists("../../models"):
 # ================================================================
 # Data Preparation
 # ================================================================
-# Unzipping the dataset if necessary
-# with ZipFile("../../new-plant-diseases-dataset.zip", "r") as zip_ref:
-#     zip_ref.extractall("../../data/raw")
-
 # Specify the path to the dataset
 data_path = "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/"
 train_dir = os.path.join(data_path, "train")
@@ -157,6 +155,8 @@ data_pivot = data_pivot.sort_values(by="total_images", ascending=False).reset_in
 )
 
 # Save the combined data DataFrame
+if not os.path.exists("../../data/processed"):
+    os.makedirs("../../data/processed")
 data_pivot.to_csv("../../data/processed/data_summary.csv", index=False)
 
 # ================================================================
@@ -238,7 +238,7 @@ transform = transforms.Compose(
     [
         transforms.Resize((HEIGHT, WIDTH)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 )
 
@@ -259,8 +259,11 @@ print("Crop Type Classes:", train_dataset.class_to_idx["crop_type"])
 print("Disease Classes:", train_dataset.class_to_idx["disease"])
 
 # ================================================================
-# Model Definition
+# Model Definitions
 # ================================================================
+# ------------------------------
+# MultiTaskCNN Model Definition
+# ------------------------------
 class MultiTaskCNN(nn.Module):
     def __init__(self, num_crop_types, num_diseases):
         super(MultiTaskCNN, self).__init__()
@@ -271,6 +274,56 @@ class MultiTaskCNN(nn.Module):
         # Remove the last layer (fully connected layer) of the feature extractor
         num_features = self.feature_extractor.fc.in_features
         self.feature_extractor.fc = nn.Identity()
+
+        # Task-specific layers
+        # Crop classification head
+        self.crop_head = nn.Sequential(
+            nn.Linear(num_features, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(512, num_crop_types),
+        )
+
+        # Disease detection head (binary classification: healthy vs diseased)
+        self.disease_detection_head = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(256, 1),
+            nn.Sigmoid(),
+        )
+
+        # Disease classification head
+        self.disease_classification_head = nn.Sequential(
+            nn.Linear(num_features, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(512, num_diseases),
+        )
+
+    def forward(self, x):
+        # Shared feature extraction
+        x = self.feature_extractor(x)
+
+        # Task-specific predictions
+        crop_pred = self.crop_head(x)
+        disease_detection_pred = self.disease_detection_head(x)
+        disease_classification_pred = self.disease_classification_head(x)
+
+        return crop_pred, disease_detection_pred, disease_classification_pred
+
+# ------------------------------
+# MultiTaskViT Model Definition
+# ------------------------------
+class MultiTaskViT(nn.Module):
+    def __init__(self, num_crop_types, num_diseases):
+        super(MultiTaskViT, self).__init__()
+
+        # Load a pre-trained ViT model as feature extractor
+        self.feature_extractor = timm.create_model('vit_base_patch16_224', pretrained=True)
+
+        num_features = self.feature_extractor.head.in_features
+        self.feature_extractor.head = nn.Identity()  # Remove the classification head
 
         # Task-specific layers
         # Crop classification head
@@ -358,20 +411,35 @@ class MultiTaskLoss(nn.Module):
 num_crop_types = len(train_dataset.class_to_idx["crop_type"])
 num_diseases = len(train_dataset.class_to_idx["disease"])
 
-model = MultiTaskCNN(num_crop_types, num_diseases)
+# Instantiate MultiTaskCNN
+cnn_model = MultiTaskCNN(num_crop_types, num_diseases)
 
-# Move model to device and wrap with DataParallel if multiple GPUs are available
+# Instantiate MultiTaskViT
+vit_model = MultiTaskViT(num_crop_types, num_diseases)
+
+# Move models to device and wrap with DataParallel if multiple GPUs are available
 if torch.cuda.device_count() > 1:
-    model = nn.DataParallel(model)
-model.to(device)
+    cnn_model = nn.DataParallel(cnn_model)
+    vit_model = nn.DataParallel(vit_model)
+
+cnn_model.to(device)
+vit_model.to(device)
 
 # ================================================================
 # Optimizer, Loss Function, and Scheduler
 # ================================================================
 criterion = MultiTaskLoss().to(device)
-optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, mode="min", factor=0.1, patience=3, verbose=True
+
+# Optimizer and Scheduler for CNN model
+cnn_optimizer = optim.Adam(cnn_model.parameters(), lr=LEARNING_RATE)
+cnn_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    cnn_optimizer, mode="min", factor=0.1, patience=3, verbose=True
+)
+
+# Optimizer and Scheduler for ViT model
+vit_optimizer = optim.Adam(vit_model.parameters(), lr=LEARNING_RATE)
+vit_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    vit_optimizer, mode="min", factor=0.1, patience=3, verbose=True
 )
 
 # ================================================================
@@ -408,6 +476,7 @@ def train_model(
     valid_loader,
     device,
     num_epochs=NUM_EPOCHS,
+    model_name="Model"
 ):
     """
     Training loop for the multi-task model.
@@ -424,7 +493,7 @@ def train_model(
         correct_crop = 0
         total = 0
 
-        for inputs, labels in tqdm(train_loader, desc=f"Training Epoch {epoch+1}"):
+        for inputs, labels in tqdm(train_loader, desc=f"Training Epoch {epoch+1}/{num_epochs} - {model_name}"):
             inputs = inputs.to(device)
             labels = {k: v.to(device) for k, v in labels.items()}
 
@@ -453,7 +522,7 @@ def train_model(
         total_val = 0
 
         with torch.no_grad():
-            for inputs, labels in tqdm(valid_loader, desc="Validation"):
+            for inputs, labels in tqdm(valid_loader, desc=f"Validation - {model_name}"):
                 inputs = inputs.to(device)
                 labels = {k: v.to(device) for k, v in labels.items()}
 
@@ -473,7 +542,7 @@ def train_model(
 
         print(
             f"Epoch [{epoch+1}/{num_epochs}] "
-            f"Train Loss: {avg_train_loss:.4f} "
+            f"{model_name} Train Loss: {avg_train_loss:.4f} "
             f"Train Acc: {train_accuracy*100:.2f}% "
             f"Val Loss: {avg_val_loss:.4f} "
             f"Val Acc: {val_accuracy*100:.2f}%"
@@ -491,51 +560,74 @@ def train_model(
     return model, train_losses, val_losses, train_accuracies, val_accuracies
 
 # ================================================================
-# Training the Model
+# Training the Models
 # ================================================================
-trained_model, train_losses, val_losses, train_accuracies, val_accuracies = train_model(
-    model,
+print("Training MultiTaskCNN Model")
+cnn_trained_model, cnn_train_losses, cnn_val_losses, cnn_train_accuracies, cnn_val_accuracies = train_model(
+    cnn_model,
     criterion,
-    optimizer,
-    scheduler,
+    cnn_optimizer,
+    cnn_scheduler,
     train_loader,
     valid_loader,
     device,
     num_epochs=NUM_EPOCHS,
+    model_name="MultiTaskCNN"
+)
+
+print("\nTraining MultiTaskViT Model")
+vit_trained_model, vit_train_losses, vit_val_losses, vit_train_accuracies, vit_val_accuracies = train_model(
+    vit_model,
+    criterion,
+    vit_optimizer,
+    vit_scheduler,
+    train_loader,
+    valid_loader,
+    device,
+    num_epochs=NUM_EPOCHS,
+    model_name="MultiTaskViT"
 )
 
 # ================================================================
 # Plotting Training and Validation Metrics
 # ================================================================
-# Plot the training and validation losses
-plt.figure(figsize=(10, 6))
-plt.plot(train_losses, label="Training Loss", color="blue")
-plt.plot(val_losses, label="Validation Loss", color="orange")
-plt.xlabel("Epoch")
-plt.ylabel("Loss")
-plt.title("Training and Validation Loss")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("../../reports/figures/multitask_loss.pdf")
-plt.close()
+# Function to plot metrics
+def plot_metrics(train_losses, val_losses, train_accuracies, val_accuracies, model_name):
+    # Plot the training and validation losses
+    plt.figure(figsize=(10, 6))
+    plt.plot(train_losses, label="Training Loss", color="blue")
+    plt.plot(val_losses, label="Validation Loss", color="orange")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title(f"Training and Validation Loss - {model_name}")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(f"../../reports/figures/{model_name}_loss.pdf")
+    plt.close()
 
-# Plot the training and validation accuracies
-plt.figure(figsize=(10, 6))
-plt.plot(
-    [acc * 100 for acc in train_accuracies], label="Training Accuracy", color="blue"
-)
-plt.plot(
-    [acc * 100 for acc in val_accuracies], label="Validation Accuracy", color="orange"
-)
-plt.xlabel("Epoch")
-plt.ylabel("Accuracy (%)")
-plt.title("Training and Validation Accuracy")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("../../reports/figures/multitask_accuracy.pdf")
-plt.close()
+    # Plot the training and validation accuracies
+    plt.figure(figsize=(10, 6))
+    plt.plot(
+        [acc * 100 for acc in train_accuracies], label="Training Accuracy", color="blue"
+    )
+    plt.plot(
+        [acc * 100 for acc in val_accuracies], label="Validation Accuracy", color="orange"
+    )
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy (%)")
+    plt.title(f"Training and Validation Accuracy - {model_name}")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(f"../../reports/figures/{model_name}_accuracy.pdf")
+    plt.close()
+
+# Plot metrics for CNN model
+plot_metrics(cnn_train_losses, cnn_val_losses, cnn_train_accuracies, cnn_val_accuracies, "MultiTaskCNN")
+
+# Plot metrics for ViT model
+plot_metrics(vit_train_losses, vit_val_losses, vit_train_accuracies, vit_val_accuracies, "MultiTaskViT")
 
 # ================================================================
 # Evaluation Function
@@ -611,53 +703,68 @@ def evaluate(model, data_loader, device):
     return results
 
 # ================================================================
-# Evaluating the Model
+# Evaluating the Models
 # ================================================================
-train_results = evaluate(trained_model, train_loader, device)
-valid_results = evaluate(trained_model, valid_loader, device)
+print("\nEvaluating MultiTaskCNN Model")
+cnn_train_results = evaluate(cnn_trained_model, train_loader, device)
+cnn_valid_results = evaluate(cnn_trained_model, valid_loader, device)
 
-print(f"Training Crop Type Accuracy: {train_results['crop']['accuracy']*100:.2f}%")
-print(f"Validation Crop Type Accuracy: {valid_results['crop']['accuracy']*100:.2f}%")
+print("\nEvaluating MultiTaskViT Model")
+vit_train_results = evaluate(vit_trained_model, train_loader, device)
+vit_valid_results = evaluate(vit_trained_model, valid_loader, device)
 
-# Additional Metrics for Crop Type Classification
-train_precision = precision_score(
-    train_results["crop"]["targets"],
-    train_results["crop"]["predictions"],
-    average="macro",
-)
-train_recall = recall_score(
-    train_results["crop"]["targets"],
-    train_results["crop"]["predictions"],
-    average="macro",
-)
-train_f1 = f1_score(
-    train_results["crop"]["targets"],
-    train_results["crop"]["predictions"],
-    average="macro",
-)
+# ================================================================
+# Displaying Evaluation Metrics
+# ================================================================
+def display_metrics(train_results, valid_results, model_name):
+    print(f"\n{model_name} Training Crop Type Accuracy: {train_results['crop']['accuracy']*100:.2f}%")
+    print(f"{model_name} Validation Crop Type Accuracy: {valid_results['crop']['accuracy']*100:.2f}%")
 
-valid_precision = precision_score(
-    valid_results["crop"]["targets"],
-    valid_results["crop"]["predictions"],
-    average="macro",
-)
-valid_recall = recall_score(
-    valid_results["crop"]["targets"],
-    valid_results["crop"]["predictions"],
-    average="macro",
-)
-valid_f1 = f1_score(
-    valid_results["crop"]["targets"],
-    valid_results["crop"]["predictions"],
-    average="macro",
-)
+    # Additional Metrics for Crop Type Classification
+    train_precision = precision_score(
+        train_results["crop"]["targets"],
+        train_results["crop"]["predictions"],
+        average="macro",
+    )
+    train_recall = recall_score(
+        train_results["crop"]["targets"],
+        train_results["crop"]["predictions"],
+        average="macro",
+    )
+    train_f1 = f1_score(
+        train_results["crop"]["targets"],
+        train_results["crop"]["predictions"],
+        average="macro",
+    )
 
-print(
-    f"Training Precision: {train_precision:.4f}, Recall: {train_recall:.4f}, F1 Score: {train_f1:.4f}"
-)
-print(
-    f"Validation Precision: {valid_precision:.4f}, Recall: {valid_recall:.4f}, F1 Score: {valid_f1:.4f}"
-)
+    valid_precision = precision_score(
+        valid_results["crop"]["targets"],
+        valid_results["crop"]["predictions"],
+        average="macro",
+    )
+    valid_recall = recall_score(
+        valid_results["crop"]["targets"],
+        valid_results["crop"]["predictions"],
+        average="macro",
+    )
+    valid_f1 = f1_score(
+        valid_results["crop"]["targets"],
+        valid_results["crop"]["predictions"],
+        average="macro",
+    )
+
+    print(
+        f"{model_name} Training Precision: {train_precision:.4f}, Recall: {train_recall:.4f}, F1 Score: {train_f1:.4f}"
+    )
+    print(
+        f"{model_name} Validation Precision: {valid_precision:.4f}, Recall: {valid_recall:.4f}, F1 Score: {valid_f1:.4f}"
+    )
+
+# Display metrics for CNN model
+display_metrics(cnn_train_results, cnn_valid_results, "MultiTaskCNN")
+
+# Display metrics for ViT model
+display_metrics(vit_train_results, vit_valid_results, "MultiTaskViT")
 
 # ================================================================
 # Confusion Matrix for Crop Type Classification
@@ -685,15 +792,27 @@ def plot_confusion_matrix(targets, predictions, classes, model_name, task_name):
     plt.close()
 
 crop_classes = list(train_dataset.class_to_idx["crop_type"].keys())
+
+# Confusion matrix for CNN model
 plot_confusion_matrix(
-    valid_results["crop"]["targets"],
-    valid_results["crop"]["predictions"],
+    cnn_valid_results["crop"]["targets"],
+    cnn_valid_results["crop"]["predictions"],
     crop_classes,
     "MultiTaskCNN",
     "Crop_Type",
 )
 
+# Confusion matrix for ViT model
+plot_confusion_matrix(
+    vit_valid_results["crop"]["targets"],
+    vit_valid_results["crop"]["predictions"],
+    crop_classes,
+    "MultiTaskViT",
+    "Crop_Type",
+)
+
 # ================================================================
-# Saving the Trained Model
+# Saving the Trained Models
 # ================================================================
-torch.save(trained_model.state_dict(), "../../models/MultiTaskCNN.pth")
+torch.save(cnn_trained_model.state_dict(), "../../models/MultiTaskCNN.pth")
+torch.save(vit_trained_model.state_dict(), "../../models/MultiTaskViT.pth")

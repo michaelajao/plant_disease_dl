@@ -15,12 +15,15 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 import seaborn as sns
-from sklearn.metrics import confusion_matrix, accuracy_score
+from sklearn.metrics import confusion_matrix
+
+# Import timm for EfficientNetV2
+import timm
 
 # Ensure the helper functions and settings are imported
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 from helper_functions import set_seeds, accuracy_fn  # Custom helper functions
-from helper_functions import *  # Import helper functions and matplotlib settings
+from helper_functions import *
 
 # ================================================================
 # Configuration and Settings
@@ -31,12 +34,12 @@ set_seeds(42)
 # Hyperparameters and configuration setup
 BATCH_SIZE = 32        # Number of samples per batch
 LEARNING_RATE = 0.001  # Learning rate for the optimizer
-NUM_EPOCHS = 10        # Number of epochs for training
+NUM_EPOCHS = 20        # Number of epochs for training
 HEIGHT, WIDTH = 224, 224  # Image dimensions
 
 # Data fractions for training and validation
 train_data_fraction = 0.5  # Use 50% of the training data
-valid_data_fraction = 0.1  # Use 10% of the validation data
+valid_data_fraction = 0.5  # Use 50% of the validation data
 
 # Device configuration: use multiple GPUs if available
 if torch.cuda.device_count() > 1:
@@ -63,7 +66,6 @@ if not os.path.exists("../../models"):
 # ================================================================
 # Data Preparation
 # ================================================================
-
 # Specify the path to the dataset
 data_path = "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/"
 train_dir = os.path.join(data_path, "train")
@@ -84,6 +86,7 @@ train_size = int(len(full_train_data) * train_data_fraction)
 valid_size = int(len(full_valid_data) * valid_data_fraction)
 
 # Create a subset of the training and validation datasets
+np.random.seed(42)  # Ensure reproducibility
 train_indices = np.random.choice(len(full_train_data), train_size, replace=False)
 valid_indices = np.random.choice(len(full_valid_data), valid_size, replace=False)
 
@@ -103,6 +106,9 @@ valid_loader = DataLoader(
 # ================================================================
 # Model Definitions
 # ================================================================
+
+# Get the number of classes
+output_size = len(full_train_data.classes)
 
 # ------------------------------
 # Baseline Model Definition
@@ -223,7 +229,7 @@ class TinyVGG(nn.Module):
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Linear(in_features=hidden_units * 2 * (HEIGHT // 4) * (WIDTH // 4),
-                      out_features=output_shape),
+                      out_features=output_size),
         )
 
     def forward(self, x):
@@ -232,225 +238,212 @@ class TinyVGG(nn.Module):
         x = self.classifier(x)
         return x
 
+# ------------------------------
+# EfficientNetV2 Model Definition
+# ------------------------------
+# EfficientNetV2 Model Definition
+# Instantiate the EfficientNetV2 model with pretrained weights
+efficientnetv2_model = timm.create_model(
+    'efficientnetv2_rw_s',  # Using EfficientNetV2 RW small version
+    pretrained=True,        # Use pretrained weights
+    num_classes=output_size  # Adjust output size to match number of classes
+)
+
+
 # ================================================================
 # Instantiate Models and Optimizers
 # ================================================================
-
-# Get the number of classes
-output_size = len(full_train_data.classes)
-
-# Instantiate the models
-baseline_model = BaselineModel(input_shape=3, hidden_units=8, output_shape=output_size)
-convnetplus_model = ConvNetPlus(input_shape=3, hidden_units=16, output_shape=output_size)
-tinyvgg_model = TinyVGG(input_shape=3, hidden_units=64, output_shape=output_size)
-
 # Move models to device and wrap with DataParallel for multi-GPU support
 if torch.cuda.device_count() > 1:
-    baseline_model = nn.DataParallel(baseline_model)
-    convnetplus_model = nn.DataParallel(convnetplus_model)
-    tinyvgg_model = nn.DataParallel(tinyvgg_model)
+    baseline_model = nn.DataParallel(BaselineModel(input_shape=3, hidden_units=10, output_shape=output_size))
+    convnetplus_model = nn.DataParallel(ConvNetPlus(input_shape=3, hidden_units=32, output_shape=output_size))
+    tinyvgg_model = nn.DataParallel(TinyVGG(input_shape=3, hidden_units=64, output_shape=output_size))
+    efficientnetv2_model = nn.DataParallel(efficientnetv2_model)
+else:
+    baseline_model = BaselineModel(input_shape=3, hidden_units=10, output_shape=output_size)
+    convnetplus_model = ConvNetPlus(input_shape=3, hidden_units=32, output_shape=output_size)
+    tinyvgg_model = TinyVGG(input_shape=3, hidden_units=64, output_shape=output_size)
 
 baseline_model.to(device)
 convnetplus_model.to(device)
 tinyvgg_model.to(device)
+efficientnetv2_model.to(device)
 
-# Define loss function and optimizers
+# Define loss function
 loss_fn = nn.CrossEntropyLoss()
 
 # Optimizers for each model
 baseline_optimizer = optim.Adam(baseline_model.parameters(), lr=LEARNING_RATE)
 convnetplus_optimizer = optim.SGD(convnetplus_model.parameters(), lr=LEARNING_RATE)
 tinyvgg_optimizer = optim.RMSprop(tinyvgg_model.parameters(), lr=LEARNING_RATE)
+efficientnetv2_optimizer = optim.Adam(efficientnetv2_model.parameters(), lr=LEARNING_RATE)
+
+# Learning rate schedulers
+baseline_scheduler = optim.lr_scheduler.ReduceLROnPlateau(baseline_optimizer, mode='min', factor=0.1, patience=3)
+convnetplus_scheduler = optim.lr_scheduler.ReduceLROnPlateau(convnetplus_optimizer, mode='min', factor=0.1, patience=3)
+tinyvgg_scheduler = optim.lr_scheduler.ReduceLROnPlateau(tinyvgg_optimizer, mode='min', factor=0.1, patience=3)
+efficientnetv2_scheduler = optim.lr_scheduler.StepLR(efficientnetv2_optimizer, step_size=5, gamma=0.1)
+
+# ================================================================
+# EarlyStopping Class Definition
+# ================================================================
+class EarlyStopping:
+    def __init__(self, patience=3, min_delta=0.0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+
+    def __call__(self, val_loss):
+        if self.best_score is None:
+            self.best_score = val_loss
+        elif val_loss > self.best_score - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = val_loss
+            self.counter = 0
 
 # ================================================================
 # Training and Evaluation Functions
 # ================================================================
-
-# ------------------------------
-# Training Function
-# ------------------------------
-def train_model(model, dataloader, optimizer, loss_fn, accuracy_fn, epoch):
-    """
-    Trains the model for one epoch and returns the average training loss and accuracy.
-
-    Args:
-        model (nn.Module): The model to be trained.
-        dataloader (DataLoader): DataLoader for training data.
-        optimizer (optim.Optimizer): Optimizer for updating model parameters.
-        loss_fn (nn.Module): Loss function.
-        accuracy_fn (function): Function to compute accuracy.
-        epoch (int): Current epoch number.
-
-    Returns:
-        tuple: Average training loss and accuracy.
-    """
-    model.train()
-    train_loss, train_acc = 0, 0
-
-    for batch, (X, y) in enumerate(tqdm(dataloader, desc=f"Training Epoch {epoch+1}", leave=False)):
-        X, y = X.to(device), y.to(device)
-
-        # Forward pass
-        y_pred = model(X)
-        loss = loss_fn(y_pred, y)
-        train_loss += loss.item()
-
-        # Backward pass and optimization
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        # Calculate accuracy
-        train_acc += accuracy_fn(y_true=y, y_pred=y_pred.argmax(dim=1))
-
-    avg_train_loss = train_loss / len(dataloader)
-    avg_train_acc = train_acc / len(dataloader)
-    return avg_train_loss, avg_train_acc
-
-# ------------------------------
-# Evaluation Function
-# ------------------------------
-def eval_model(model, dataloader, loss_fn, accuracy_fn):
-    """
-    Evaluates the model on the given data loader.
-
-    Args:
-        model (nn.Module): The model to be evaluated.
-        dataloader (DataLoader): DataLoader for validation data.
-        loss_fn (nn.Module): Loss function.
-        accuracy_fn (function): Function to compute accuracy.
-
-    Returns:
-        dict: Dictionary with validation loss and accuracy.
-    """
-    model.eval()
-    valid_loss, valid_acc = 0, 0
-
-    with torch.no_grad():
-        for X, y in tqdm(dataloader, desc="Evaluating", leave=False):
-            X, y = X.to(device), y.to(device)
-
-            # Forward pass
-            y_pred = model(X)
-            valid_loss += loss_fn(y_pred, y).item()
-            valid_acc += accuracy_fn(y_true=y, y_pred=y_pred.argmax(dim=1))
-
-    avg_valid_loss = valid_loss / len(dataloader)
-    avg_valid_acc = valid_acc / len(dataloader)
-    return {"model_loss": avg_valid_loss, "model_acc": avg_valid_acc}
-
-# ------------------------------
-# Training and Evaluation Loop
-# ------------------------------
-def train_and_evaluate(
-    model, train_loader, valid_loader, optimizer, loss_fn, accuracy_fn,
-    num_epochs, model_name, optimizer_name, early_stopping_patience=1
+def train_model(
+    model,
+    optimizer,
+    scheduler,
+    train_loader,
+    valid_loader,
+    device,
+    num_epochs,
+    model_name,
+    optimizer_name,
+    early_stopping_patience=5,
 ):
     """
-    Trains and evaluates the model for a specified number of epochs with early stopping.
+    Training loop for the model with early stopping.
 
     Args:
-        model (nn.Module): The model to train and evaluate.
+        model (nn.Module): The model to train.
+        optimizer (optim.Optimizer): The optimizer.
+        scheduler (optim.lr_scheduler): The learning rate scheduler.
         train_loader (DataLoader): DataLoader for training data.
         valid_loader (DataLoader): DataLoader for validation data.
-        optimizer (optim.Optimizer): Optimizer for training the model.
-        loss_fn (nn.Module): Loss function.
-        accuracy_fn (function): Function to compute accuracy.
-        num_epochs (int): Maximum number of epochs for training.
-        model_name (str): Name of the model (for logging purposes).
-        optimizer_name (str): Name of the optimizer used.
-        early_stopping_patience (int): Number of epochs with no improvement after which training will be stopped.
+        device (torch.device): The device to train on.
+        num_epochs (int): Number of epochs to train.
+        model_name (str): Name of the model (for saving).
+        optimizer_name (str): Name of the optimizer.
+        early_stopping_patience (int): Patience for early stopping.
 
     Returns:
-        tuple: (list of epoch results, best result dictionary)
+        tuple: (trained model, best result dictionary)
     """
-    results = []
-    total_start_time = time.time()
+    # Initialize variables
+    train_losses = []
+    val_losses = []
+    train_accuracies = []
+    val_accuracies = []
 
-    best_valid_acc = 0
-    epochs_no_improve = 0
+    early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=0.0)
+    best_valid_loss = float('inf')
     best_epoch = 0
     best_model_state = None
 
-    # Lists to store metrics for plotting
-    train_losses = []
-    valid_losses = []
-    train_accuracies = []
-    valid_accuracies = []
-    epoch_durations = []
+    total_start_time = time.time()
 
     for epoch in range(num_epochs):
         start_time = time.time()
-        print(f"Epoch {epoch+1}/{num_epochs}")
+        print(f"\nEpoch {epoch+1}/{num_epochs}")
 
-        # Training
-        avg_train_loss, avg_train_acc = train_model(
-            model, train_loader, optimizer, loss_fn, accuracy_fn, epoch
-        )
-        print(f"Train Loss: {avg_train_loss:.4f}, Train Accuracy: {avg_train_acc:.2f}%")
+        # Training Phase
+        model.train()
+        running_train_loss = 0.0
+        correct_train = 0
+        total_train = 0
 
-        # Validation
-        valid_results = eval_model(model, valid_loader, loss_fn, accuracy_fn)
-        print(
-            f"Validation Loss: {valid_results['model_loss']:.4f}, "
-            f"Validation Accuracy: {valid_results['model_acc']:.2f}%"
-        )
+        for inputs, labels in tqdm(train_loader, desc=f"Training Epoch {epoch+1}", leave=False):
+            inputs = inputs.to(device)
+            labels = labels.to(device)
 
-        # Epoch duration
-        epoch_duration = time.time() - start_time
-        print(f"Epoch {epoch+1} completed in {epoch_duration:.2f} seconds")
-        print("-" * 50)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = loss_fn(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
-        # Save metrics
-        epoch_result = {
-            "epoch": epoch + 1,
-            "train_loss": avg_train_loss,
-            "train_acc": avg_train_acc,
-            "valid_loss": valid_results["model_loss"],
-            "valid_acc": valid_results["model_acc"],
-            "epoch_duration": epoch_duration,
-            "model": model_name,
-            "optimizer": optimizer_name,
-        }
-        results.append(epoch_result)
+            running_train_loss += loss.item()
+            _, preds = torch.max(outputs, 1)
+            correct_train += (preds == labels).sum().item()
+            total_train += labels.size(0)
 
-        # Append metrics for plotting
+        avg_train_loss = running_train_loss / len(train_loader)
+        train_accuracy = (correct_train / total_train) * 100
         train_losses.append(avg_train_loss)
-        valid_losses.append(valid_results["model_loss"])
-        train_accuracies.append(avg_train_acc)
-        valid_accuracies.append(valid_results["model_acc"])
-        epoch_durations.append(epoch_duration)
+        train_accuracies.append(train_accuracy)
 
-        # Early Stopping based on validation accuracy
-        if valid_results["model_acc"] > best_valid_acc:
-            best_valid_acc = valid_results["model_acc"]
+        # Validation Phase
+        model.eval()
+        running_val_loss = 0.0
+        correct_val = 0
+        total_val = 0
+
+        with torch.no_grad():
+            for inputs, labels in tqdm(valid_loader, desc="Validation", leave=False):
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+
+                outputs = model(inputs)
+                loss = loss_fn(outputs, labels)
+                running_val_loss += loss.item()
+
+                _, preds = torch.max(outputs, 1)
+                correct_val += (preds == labels).sum().item()
+                total_val += labels.size(0)
+
+        avg_val_loss = running_val_loss / len(valid_loader)
+        val_accuracy = (correct_val / total_val) * 100
+        val_losses.append(avg_val_loss)
+        val_accuracies.append(val_accuracy)
+
+        print(
+            f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.2f}% | "
+            f"Val Loss: {avg_val_loss:.4f}, Val Acc: {val_accuracy:.2f}%"
+        )
+
+        # Step the scheduler
+        if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+            scheduler.step(avg_val_loss)
+        else:
+            scheduler.step()
+
+        # Early Stopping
+        early_stopping(avg_val_loss)
+        if avg_val_loss < best_valid_loss:
+            best_valid_loss = avg_val_loss
             best_epoch = epoch + 1
             best_model_state = model.state_dict()
-            epochs_no_improve = 0
-        else:
-            epochs_no_improve += 1
-
-        if epochs_no_improve >= early_stopping_patience:
-            print(
-                f"Early stopping triggered after {early_stopping_patience} "
-                f"epoch(s) with no improvement."
-            )
+            torch.save(best_model_state, f"../../models/{model_name}_best_model.pth")
+        if early_stopping.early_stop:
+            print("Early stopping triggered.")
             break
 
-    total_training_time = time.time() - total_start_time
-    print(f"Total training time: {total_training_time:.2f} seconds")
+        epoch_duration = time.time() - start_time
+        print(f"Epoch {epoch+1} completed in {epoch_duration:.2f} seconds")
 
-    # Save the best model
-    torch.save(best_model_state, f"../../models/{model_name}_best_model.pth")
+    total_training_time = time.time() - total_start_time
+    print(f"\nTotal training time: {total_training_time:.2f} seconds")
+
+    # Load the best model state
+    model.load_state_dict(torch.load(f"../../models/{model_name}_best_model.pth"))
 
     # Save training history for plotting
     history = {
         "epochs": list(range(1, len(train_losses) + 1)),
         "train_losses": train_losses,
-        "valid_losses": valid_losses,
+        "val_losses": val_losses,
         "train_accuracies": train_accuracies,
-        "valid_accuracies": valid_accuracies,
-        "epoch_durations": epoch_durations,
+        "val_accuracies": val_accuracies,
     }
 
     # Plot and save training and validation loss
@@ -464,16 +457,16 @@ def train_and_evaluate(
         "model": model_name,
         "optimizer": optimizer_name,
         "best_epoch": best_epoch,
-        "best_valid_loss": results[best_epoch - 1]["valid_loss"],
-        "best_valid_acc": best_valid_acc,
+        "best_valid_loss": best_valid_loss,
+        "best_valid_acc": val_accuracies[best_epoch - 1],
         "total_training_time": total_training_time,
     }
-    return results, best_result
+
+    return model, best_result
 
 # ================================================================
 # Plotting Functions
 # ================================================================
-
 def plot_loss(history, model_name):
     """
     Plots training and validation loss over epochs.
@@ -482,13 +475,13 @@ def plot_loss(history, model_name):
         history (dict): Dictionary containing loss and accuracy history.
         model_name (str): Name of the model (for saving the plot).
     """
-    plt.figure(figsize=(10, 6))
-    plt.plot(history['epochs'], history['train_losses'], label='Training Loss')
-    plt.plot(history['epochs'], history['valid_losses'], label='Validation Loss')
-    plt.title(f'{model_name} Loss over Epochs')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
+    plt.figure()
+    plt.plot(history['epochs'], history['train_losses'], label='Training Loss', linewidth=2)
+    plt.plot(history['epochs'], history['val_losses'], label='Validation Loss', linewidth=2)
+    plt.title(f'{model_name} Loss over Epochs', fontsize=18)
+    plt.xlabel('Epochs', fontsize=16)
+    plt.ylabel('Loss', fontsize=16)
+    plt.legend(fontsize=14)
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(f"../../reports/figures/{model_name}_loss.pdf")
@@ -502,13 +495,13 @@ def plot_accuracy(history, model_name):
         history (dict): Dictionary containing loss and accuracy history.
         model_name (str): Name of the model (for saving the plot).
     """
-    plt.figure(figsize=(10, 6))
-    plt.plot(history['epochs'], history['train_accuracies'], label='Training Accuracy')
-    plt.plot(history['epochs'], history['valid_accuracies'], label='Validation Accuracy')
-    plt.title(f'{model_name} Accuracy over Epochs')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy (%)')
-    plt.legend()
+    plt.figure()
+    plt.plot(history['epochs'], history['train_accuracies'], label='Training Accuracy', linewidth=2)
+    plt.plot(history['epochs'], history['val_accuracies'], label='Validation Accuracy', linewidth=2)
+    plt.title(f'{model_name} Accuracy over Epochs', fontsize=18)
+    plt.xlabel('Epochs', fontsize=16)
+    plt.ylabel('Accuracy (%)', fontsize=16)
+    plt.legend(fontsize=14)
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(f"../../reports/figures/{model_name}_accuracy.pdf")
@@ -521,60 +514,81 @@ def plot_accuracy(history, model_name):
 # ------------------------------
 # Training Baseline Model
 # ------------------------------
-print("Training Baseline Model")
-baseline_results, baseline_best = train_and_evaluate(
+print("\nTraining Baseline Model")
+baseline_model, baseline_best = train_model(
     model=baseline_model,
+    optimizer=baseline_optimizer,
+    scheduler=baseline_scheduler,
     train_loader=train_loader,
     valid_loader=valid_loader,
-    optimizer=baseline_optimizer,
-    loss_fn=loss_fn,
-    accuracy_fn=accuracy_fn,
+    device=device,
     num_epochs=NUM_EPOCHS,
     model_name="BaselineModel",
     optimizer_name="Adam",
-    early_stopping_patience=2,
+    early_stopping_patience=5,
 )
 
 # ------------------------------
 # Training ConvNetPlus Model
 # ------------------------------
 print("\nTraining ConvNetPlus Model")
-convnetplus_results, convnetplus_best = train_and_evaluate(
+convnetplus_model, convnetplus_best = train_model(
     model=convnetplus_model,
+    optimizer=convnetplus_optimizer,
+    scheduler=convnetplus_scheduler,
     train_loader=train_loader,
     valid_loader=valid_loader,
-    optimizer=convnetplus_optimizer,
-    loss_fn=loss_fn,
-    accuracy_fn=accuracy_fn,
+    device=device,
     num_epochs=NUM_EPOCHS,
     model_name="ConvNetPlus",
     optimizer_name="SGD",
-    early_stopping_patience=2,
+    early_stopping_patience=5,
 )
 
 # ------------------------------
 # Training TinyVGG Model
 # ------------------------------
 print("\nTraining TinyVGG Model")
-tinyvgg_results, tinyvgg_best = train_and_evaluate(
+tinyvgg_model, tinyvgg_best = train_model(
     model=tinyvgg_model,
+    optimizer=tinyvgg_optimizer,
+    scheduler=tinyvgg_scheduler,
     train_loader=train_loader,
     valid_loader=valid_loader,
-    optimizer=tinyvgg_optimizer,
-    loss_fn=loss_fn,
-    accuracy_fn=accuracy_fn,
+    device=device,
     num_epochs=NUM_EPOCHS,
     model_name="TinyVGG",
     optimizer_name="RMSprop",
-    early_stopping_patience=2,
+    early_stopping_patience=5,
+)
+
+# ------------------------------
+# Training EfficientNetV2 Model
+# ------------------------------
+print("\nTraining EfficientNetV2 Model")
+efficientnetv2_model, efficientnetv2_best = train_model(
+    model=efficientnetv2_model,
+    optimizer=efficientnetv2_optimizer,
+    scheduler=efficientnetv2_scheduler,
+    train_loader=train_loader,
+    valid_loader=valid_loader,
+    device=device,
+    num_epochs=NUM_EPOCHS,
+    model_name="EfficientNetV2",
+    optimizer_name="Adam",
+    early_stopping_patience=5,
 )
 
 # ================================================================
 # Results Compilation and Saving
 # ================================================================
-
 # Combine the best results from each model
-best_results_df = pd.DataFrame([baseline_best, convnetplus_best, tinyvgg_best])
+best_results_df = pd.DataFrame([
+    baseline_best,
+    convnetplus_best,
+    tinyvgg_best,
+    efficientnetv2_best
+])
 
 # Display the best results DataFrame for comparison
 print("\nBest Results for Each Model:")
@@ -584,64 +598,8 @@ print(best_results_df)
 best_results_df.to_csv("../../reports/results/model_best_results.csv", index=False)
 
 # ================================================================
-# Comparison Plots Across Models
-# ================================================================
-
-def plot_model_comparison(results_list, metric, title, ylabel, filename):
-    """
-    Plots comparison of a specific metric across different models.
-
-    Args:
-        results_list (list): List of result dictionaries for each model.
-        metric (str): Metric to compare ('train_loss', 'valid_loss', 'train_acc', 'valid_acc').
-        title (str): Title of the plot.
-        ylabel (str): Y-axis label.
-        filename (str): Filename to save the plot.
-    """
-    plt.figure(figsize=(10, 6))
-    for result in results_list:
-        epochs = [epoch['epoch'] for epoch in result['results']]
-        values = [epoch[metric] for epoch in result['results']]
-        plt.plot(epochs, values, label=result['model_name'])
-    plt.title(title)
-    plt.xlabel('Epochs')
-    plt.ylabel(ylabel)
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(f"../../reports/figures/{filename}.pdf")
-    plt.close()
-
-# Prepare results for plotting
-baseline_plot_data = {'results': baseline_results, 'model_name': 'BaselineModel'}
-convnetplus_plot_data = {'results': convnetplus_results, 'model_name': 'ConvNetPlus'}
-tinyvgg_plot_data = {'results': tinyvgg_results, 'model_name': 'TinyVGG'}
-
-all_results = [baseline_plot_data, convnetplus_plot_data, tinyvgg_plot_data]
-
-# Plot total training time comparison
-model_names = [baseline_best['model'], convnetplus_best['model'], tinyvgg_best['model']]
-training_times = [
-    baseline_best['total_training_time'],
-    convnetplus_best['total_training_time'],
-    tinyvgg_best['total_training_time']
-]
-
-plt.figure(figsize=(10, 6))
-plt.bar(model_names, training_times, color=['blue', 'orange', 'green'])
-plt.title('Total Training Time Comparison')
-plt.xlabel('Model')
-plt.ylabel('Time (seconds)')
-plt.tight_layout()
-plt.savefig("../../reports/figures/training_time_comparison.pdf")
-plt.close()
-
-
-
-# ================================================================
 # Bar Chart Comparison Function
 # ================================================================
-
 def plot_bar_comparison(results_list, metric, ylabel, title, filename):
     """
     Plots a bar chart comparing the specified metric (accuracy or loss) for each model.
@@ -656,11 +614,11 @@ def plot_bar_comparison(results_list, metric, ylabel, title, filename):
     model_names = [result['model'] for result in results_list]
     metric_values = [result[metric] for result in results_list]
 
-    plt.figure(figsize=(8, 6))
-    plt.bar(model_names, metric_values, color=['blue', 'orange', 'green'])
-    plt.title(title)
-    plt.xlabel('Model')
-    plt.ylabel(ylabel)
+    plt.figure()
+    plt.bar(model_names, metric_values, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+    plt.title(title, fontsize=18)
+    plt.xlabel('Model', fontsize=16)
+    plt.ylabel(ylabel, fontsize=16)
     plt.tight_layout()
 
     # Save the plot as a PDF file
@@ -670,10 +628,9 @@ def plot_bar_comparison(results_list, metric, ylabel, title, filename):
 # ================================================================
 # Generate Bar Charts for Accuracy and Loss Comparison
 # ================================================================
-
 # Plot bar chart for best validation accuracy comparison
 plot_bar_comparison(
-    results_list=[baseline_best, convnetplus_best, tinyvgg_best],
+    results_list=[baseline_best, convnetplus_best, tinyvgg_best, efficientnetv2_best],
     metric='best_valid_acc',
     ylabel='Best Validation Accuracy (%)',
     title='Best Validation Accuracy Comparison',
@@ -682,17 +639,34 @@ plot_bar_comparison(
 
 # Plot bar chart for best validation loss comparison
 plot_bar_comparison(
-    results_list=[baseline_best, convnetplus_best, tinyvgg_best],
+    results_list=[baseline_best, convnetplus_best, tinyvgg_best, efficientnetv2_best],
     metric='best_valid_loss',
     ylabel='Best Validation Loss',
     title='Best Validation Loss Comparison',
     filename='best_validation_loss_comparison'
 )
 
+# Plot total training time comparison
+model_names = [baseline_best['model'], convnetplus_best['model'], tinyvgg_best['model'], efficientnetv2_best['model']]
+training_times = [
+    baseline_best['total_training_time'],
+    convnetplus_best['total_training_time'],
+    tinyvgg_best['total_training_time'],
+    efficientnetv2_best['total_training_time']
+]
+
+plt.figure()
+plt.bar(model_names, training_times, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+plt.title('Total Training Time Comparison', fontsize=18)
+plt.xlabel('Model', fontsize=16)
+plt.ylabel('Time (seconds)', fontsize=16)
+plt.tight_layout()
+plt.savefig("../../reports/figures/training_time_comparison.pdf")
+plt.close()
+
 # ================================================================
 # Additional Visualizations
 # ================================================================
-
 # Function to plot sample images with predictions and probabilities
 def plot_sample_predictions(model, data_loader, model_name, num_samples=5):
     """
@@ -708,7 +682,7 @@ def plot_sample_predictions(model, data_loader, model_name, num_samples=5):
     class_names = full_train_data.classes
     images_displayed = 0
 
-    plt.figure(figsize=(20, 15))
+    plt.figure(figsize=(20, 5))
     with torch.no_grad():
         for images, labels in data_loader:
             images, labels = images.to(device), labels.to(device)
@@ -730,8 +704,8 @@ def plot_sample_predictions(model, data_loader, model_name, num_samples=5):
 
                 plt.subplot(1, num_samples, images_displayed)
                 plt.imshow(image)
-                plt.title(f'True: {true_label}\nPred: {pred_label}\nConfidence: {prob:.1f}%',
-                          color=title_color, fontsize=8)
+                plt.title(f'True: {true_label}\nPred: {pred_label}\nConf: {prob:.1f}%',
+                          color=title_color, fontsize=10)
                 plt.axis('off')
 
             if images_displayed >= num_samples:
@@ -742,15 +716,7 @@ def plot_sample_predictions(model, data_loader, model_name, num_samples=5):
     plt.savefig(f"../../reports/figures/{model_name}_sample_predictions.pdf")
     plt.close()
 
-# Plot sample predictions for each model
-plot_sample_predictions(baseline_model, valid_loader, 'BaselineModel')
-plot_sample_predictions(convnetplus_model, valid_loader, 'ConvNetPlus')
-plot_sample_predictions(tinyvgg_model, valid_loader, 'TinyVGG')
-
-# ================================================================
-# Confusion Matrix Generation
-# ================================================================
-
+# Function to generate confusion matrix
 def generate_confusion_matrix(model, data_loader, model_name):
     """
     Generates and saves a confusion matrix for the model's predictions on the validation set.
@@ -777,19 +743,27 @@ def generate_confusion_matrix(model, data_loader, model_name):
     cm = confusion_matrix(all_labels, all_preds)
     cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
 
-    plt.figure(figsize=(30, 20))
-    sns.heatmap(cm_normalized, annot=True, fmt=".2f", cmap='Blues',
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(cm_normalized, annot=False, fmt=".2f", cmap='viridis',
                 xticklabels=class_names, yticklabels=class_names)
-    plt.xlabel('Predicted Label')
-    plt.ylabel('True Label')
-    plt.title(f'Confusion Matrix for {model_name}')
-    plt.xticks(rotation=90)
-    plt.yticks(rotation=0)
+    plt.xlabel('Predicted Label', fontsize=16)
+    plt.ylabel('True Label', fontsize=16)
+    plt.title(f'Confusion Matrix for {model_name}', fontsize=18)
+    plt.xticks(rotation=90, fontsize=12)
+    plt.yticks(rotation=0, fontsize=12)
     plt.tight_layout()
     plt.savefig(f"../../reports/figures/{model_name}_confusion_matrix.pdf")
     plt.close()
 
-# Generate confusion matrices for each model
-generate_confusion_matrix(baseline_model, valid_loader, 'BaselineModel')
-generate_confusion_matrix(convnetplus_model, valid_loader, 'ConvNetPlus')
-generate_confusion_matrix(tinyvgg_model, valid_loader, 'TinyVGG')
+# Generate sample predictions and confusion matrices for each model
+models = [
+    (baseline_model, 'BaselineModel'),
+    (convnetplus_model, 'ConvNetPlus'),
+    (tinyvgg_model, 'TinyVGG'),
+    (efficientnetv2_model, 'EfficientNetV2')
+]
+
+for model, model_name in models:
+    print(f"\nGenerating visualizations for {model_name}")
+    plot_sample_predictions(model, valid_loader, model_name)
+    generate_confusion_matrix(model, valid_loader, model_name)

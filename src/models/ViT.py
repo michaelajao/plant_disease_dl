@@ -1,362 +1,115 @@
+# ================================================================
+# Import Necessary Libraries
+# ================================================================
 import os
-import pandas as pd
-from torchvision import datasets, transforms
-from torch.utils.data import Dataset, DataLoader
-import torch
-from tqdm import tqdm
-import numpy as np
+import sys
 import time
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from tqdm.auto import tqdm
 
-import torchvision.models as models
-import torch.optim as optim
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn import TransformerEncoder, TransformerEncoderLayer
-import matplotlib.pyplot as plt
+import torch.optim as optim
+from torch.utils.data import DataLoader, Subset
+from torchvision import datasets, transforms
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
 
-# Set matplotlib configurations
-plt.rcParams.update(
-    {
-        "lines.linewidth": 2,
-        "font.family": "serif",
-        "axes.titlesize": 20,
-        "axes.labelsize": 14,
-        "figure.figsize": [15, 8],
-        "figure.autolayout": True,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "axes.grid": True,
-        "grid.color": "0.75",
-        "legend.fontsize": "medium",
-        "legend.fancybox": False,
-        "legend.frameon": False,
-        "legend.shadow": False,
-        "savefig.transparent": True,
-        "xtick.labelsize": 12,
-        "ytick.labelsize": 12,
-        "savefig.bbox": "tight",
-        "savefig.pad_inches": 0.1,
-        "savefig.dpi": 400,
-    }
-)
+# Import timm for EfficientNetV2
+import timm
 
-# Set data paths
+# Ensure the helper functions and settings are imported
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+from helper_functions import set_seeds, accuracy_fn  # Custom helper functions
+from helper_functions import *
+
+# ================================================================
+# Configuration and Settings
+# ================================================================
+# Set seeds for reproducibility
+set_seeds(42)
+
+# Hyperparameters and configuration setup
+BATCH_SIZE = 32        # Number of samples per batch
+LEARNING_RATE = 0.001  # Learning rate for the optimizer
+NUM_EPOCHS = 20        # Number of epochs for training
+HEIGHT, WIDTH = 224, 224  # Image dimensions
+
+# Data fractions for training and validation
+train_data_fraction = 0.5  # Use 50% of the training data
+valid_data_fraction = 0.5  # Use 50% of the validation data
+
+# Device configuration: use multiple GPUs if available
+if torch.cuda.device_count() > 1:
+    print(f"Using {torch.cuda.device_count()} GPUs")
+    device = torch.device("cuda")
+else:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# ================================================================
+# Directory Setup
+# ================================================================
+# Create directories to save results and figures
+if not os.path.exists("../../reports/results"):
+    os.makedirs("../../reports/results")
+
+if not os.path.exists("../../reports/figures"):
+    os.makedirs("../../reports/figures")
+
+# Create a directory to save the models
+if not os.path.exists("../../models"):
+    os.makedirs("../../models")
+
+# ================================================================
+# Data Preparation
+# ================================================================
+# Specify the path to the dataset
 data_path = "../../data/raw/new plant diseases dataset(augmented)/New Plant Diseases Dataset(Augmented)/"
 train_dir = os.path.join(data_path, "train")
 valid_dir = os.path.join(data_path, "valid")
 
-# Extracting disease folders from the training directory
-diseases = os.listdir(train_dir)
+# Define image transformations (resize images and convert to tensors)
+transform = transforms.Compose([
+    transforms.Resize((HEIGHT, WIDTH)),
+    transforms.ToTensor(),
+])
 
-plant_names = []
-disease_names = []
-healthy_labels = []
+# Load the full training and validation datasets
+full_train_data = datasets.ImageFolder(train_dir, transform=transform)
+full_valid_data = datasets.ImageFolder(valid_dir, transform=transform)
 
-# Separating plant names and disease names, including a separate category for 'healthy'
-for disease_folder in diseases:
-    parts = disease_folder.split("___")
-    plant = parts[0]
-    disease = parts[1] if len(parts) > 1 else "Healthy"
+# Select a subset of the data based on the specified fractions
+train_size = int(len(full_train_data) * train_data_fraction)
+valid_size = int(len(full_valid_data) * valid_data_fraction)
 
-    if plant not in plant_names:
-        plant_names.append(plant)
+# Create a subset of the training and validation datasets
+np.random.seed(42)  # Ensure reproducibility
+train_indices = np.random.choice(len(full_train_data), train_size, replace=False)
+valid_indices = np.random.choice(len(full_valid_data), valid_size, replace=False)
 
-    if disease == "Healthy":
-        healthy_labels.append(f"{plant}___Healthy")
-    elif disease not in disease_names:
-        disease_names.append(disease)
+train_data = Subset(full_train_data, train_indices)
+valid_data = Subset(full_valid_data, valid_indices)
 
-# Count the number of images for each disease in the dataset
-disease_count = {}
-for disease_folder in diseases:
-    disease_path = os.path.join(train_dir, disease_folder)
-    disease_count[disease_folder] = len(os.listdir(disease_path))
-
-# Convert the disease_count dictionary to a pandas DataFrame for better analysis and visualization
-disease_count_df = pd.DataFrame(
-    disease_count.values(), index=disease_count.keys(), columns=["no_of_images"]
+# Data Loaders for training and validation data
+train_loader = DataLoader(
+    train_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
+    pin_memory=True, persistent_workers=True
+)
+valid_loader = DataLoader(
+    valid_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=8,
+    pin_memory=True, persistent_workers=True
 )
 
-print(f"Number of unique plants: {len(plant_names)}")
-print(f"Number of unique diseases (excluding healthy): {len(disease_names)}")
-print(f"Total classes (including healthy labels per plant): {len(diseases)}")
-print(f"Total number of images: {sum(disease_count.values())}")
-print(disease_count_df)
-
-# Create a dataframe for counting how many images are available for each crop and disease in the training and validation
-train_data = []
-valid_data = []
-
-for disease in diseases:
-    train_data.append(
-        {
-            "plant": disease.split("___")[0],
-            "disease": disease.split("___")[1],
-            "no_of_images": len(os.listdir(os.path.join(train_dir, disease))),
-        }
-    )
-
-    valid_data.append(
-        {
-            "plant": disease.split("___")[0],
-            "disease": disease.split("___")[1],
-            "no_of_images": len(os.listdir(os.path.join(valid_dir, disease))),
-        }
-    )
-
-train_data = pd.DataFrame(train_data)
-valid_data = pd.DataFrame(valid_data)
-
-train_data = train_data.groupby(["plant", "disease"]).sum().reset_index()
-valid_data = valid_data.groupby(["plant", "disease"]).sum().reset_index()
-
-train_data["data"] = "train"
-valid_data["data"] = "valid"
-
-data = pd.concat([train_data, valid_data])
-
-data = data.pivot(
-    index=["plant", "disease"], columns="data", values="no_of_images"
-).reset_index()
-
-data = data.fillna(0)
-
-data["total_images"] = data.train + data.valid
-
-data = data.sort_values(by="total_images", ascending=False)
-
-data = data.reset_index(drop=True)
-
-data.to_csv("../../data/processed/data.csv", index=False)
-
-
-class PlantDiseaseDataset(Dataset):
-    def __init__(self, data_dir, transform=None):
-        self.data_dir = data_dir
-        self.transform = transform
-        self.data = []
-        self.labels = {"crop_type": [], "disease": [], "healthy": []}
-        self.class_to_idx = {
-            "crop_type": {},
-            "disease": {},
-            "healthy": {True: 1, False: 0},
-        }
-        self.idx_to_class = {
-            "crop_type": {},
-            "disease": {},
-            "healthy": {1: True, 0: False},
-        }
-
-        self._prepare_dataset()
-
-    def _prepare_dataset(self):
-        disease_folders = os.listdir(self.data_dir)
-        for folder_name in disease_folders:
-            folder_path = os.path.join(self.data_dir, folder_name)
-            images = os.listdir(folder_path)
-            plant, disease = folder_name.split("___")
-
-            if plant not in self.class_to_idx["crop_type"]:
-                self.class_to_idx["crop_type"][plant] = len(
-                    self.class_to_idx["crop_type"]
-                )
-                self.idx_to_class["crop_type"][
-                    len(self.idx_to_class["crop_type"])
-                ] = plant
-
-            if disease not in self.class_to_idx["disease"]:
-                self.class_to_idx["disease"][disease] = len(
-                    self.class_to_idx["disease"]
-                )
-                self.idx_to_class["disease"][
-                    len(self.idx_to_class["disease"])
-                ] = disease
-
-            for img in images:
-                img_path = os.path.join(folder_path, img)
-                self.data.append(img_path)
-                self.labels["crop_type"].append(self.class_to_idx["crop_type"][plant])
-                self.labels["disease"].append(self.class_to_idx["disease"][disease])
-                self.labels["healthy"].append(1 if disease == "Healthy" else 0)
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        img_path = self.data[idx]
-        img = datasets.folder.default_loader(img_path)
-        if self.transform:
-            img = self.transform(img)
-
-        labels = {
-            "crop_type": torch.tensor(self.labels["crop_type"][idx]),
-            "disease": torch.tensor(self.labels["disease"][idx]),
-            "healthy": torch.tensor(self.labels["healthy"][idx], dtype=torch.float),
-        }
-
-        return img, labels
-
-
-transform = transforms.Compose(
-    [
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-    ]
-)
-
-train_dataset = PlantDiseaseDataset(train_dir, transform=transform)
-valid_dataset = PlantDiseaseDataset(valid_dir, transform=transform)
-
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-valid_loader = DataLoader(valid_dataset, batch_size=32)
-
-print(train_dataset.idx_to_class)
-
-# Define the vision transformer model for multi-task learning from scratch using PyTorch
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-
-class VisionTransformerForMultiTask(nn.Module):
-    def __
-
-
-class MultiTaskLoss(nn.Module):
-    def __init__(
-        self,
-        weight_crop=1.0,
-        weight_disease_detection=1.0,
-        weight_disease_classification=1.0,
-    ):
-        super(MultiTaskLoss, self).__init__()
-        self.weight_crop = weight_crop
-        self.weight_disease_detection = weight_disease_detection
-        self.weight_disease_classification = weight_disease_classification
-        self.loss_crop = nn.CrossEntropyLoss()
-        self.loss_disease_detection = nn.BCELoss()
-        self.loss_disease_classification = nn.CrossEntropyLoss()
-
-    def forward(self, outputs, targets):
-        # Unpack the outputs and targets
-        crop_pred, disease_detection_pred, disease_classification_pred = outputs
-        crop_target, disease_detection_target, disease_classification_target = (
-            targets["crop_type"],
-            targets["healthy"],
-            targets["disease"],
-        )
-
-        # Calculate individual losses
-        loss_crop = self.loss_crop(crop_pred, crop_target)
-        loss_disease_detection = self.loss_disease_detection(
-            disease_detection_pred.view(-1), disease_detection_target
-        )
-        loss_disease_classification = self.loss_disease_classification(
-            disease_classification_pred, disease_classification_target
-        )
-
-        # Weighted sum of the individual losses
-        total_loss = (
-            self.weight_crop * loss_crop
-            + self.weight_disease_detection * loss_disease_detection
-            + self.weight_disease_classification * loss_disease_classification
-        )
-
-        return total_loss
-
-
-# Initialize the model and loss function
-model = VisionTransformerForMultiTask()
-criterion = MultiTaskLoss()
-
-# Initialize the optimizer
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
-
-# Training loop
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def train(model, criterion, optimizer, train_loader, valid_loader, num_epochs=10):
-    model.to(device)
-    model.train()
-
-    train_losses = []
-    valid_losses = []
-
-    for epoch in range(num_epochs):
-        start_time = time.time()
-        train_loss = 0.0
-        valid_loss = 0.0
-
-        model.train()
-        for i, (images, labels) in enumerate(train_loader):
-            images, labels = images.to(device), {
-                k: v.to(device) for k, v in labels.items()
-            }
-
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-
-            train_loss += loss.item()
-
-        model.eval()
-        for i, (images, labels) in enumerate(valid_loader):
-            images, labels = images.to(device), {
-                k: v.to(device) for k, v in labels.items()
-            }
-
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-
-            valid_loss += loss.item()
-
-        train_loss /= len(train_loader)
-        valid_loss /= len(valid_loader)
-
-        train_losses.append(train_loss)
-        valid_losses.append(valid_loss)
-
-        print(
-            f"Epoch {epoch+1}/{num_epochs} | "
-            f"Train Loss: {train_loss:.4f} | "
-            f"Valid Loss: {valid_loss:.4f} | "
-            f"Time: {time.time()-start_time:.2f}s"
-        )
-
-    return train_losses, valid_losses
-
-
-train_losses, valid_losses = train(
-    model, criterion, optimizer, train_loader, valid_loader, num_epochs=10
-)
-
-# Plot the training and validation losses
-
-
-import numpy as np
-
-# loss using numpy for classification problem with 3 classes: example and P(positive); P1 Normal = 0.6, P3 Normal = 0.3, and P5 Mass = 0.4
-
-p1 = 0.6
-p3 = 0.3
-
-# since these are negative examples, the losses will be -log(1 - P(positive))
-
-loss_p1 = -np.log(1 - p1)
-loss_p3 = -np.log(1 - p3)
-
-print(f"Loss for P1: {loss_p1:.4f}")
-print(f"Loss for P3: {loss_p3:.4f}")
-
-t_loss = loss_p1 + loss_p3
-print(f"Total loss: {t_loss:.4f}")
-
-import tensorflow as tf
-
-# chcck if gpu is available
-print("GPU Available: ", tf.config.list_physical_devices("GPU"))
+# ================================================================
+# Model Definitions
+# ================================================================
+
+# Get the number of classes
+output_size = len(full_train_data.classes)
+
+# ------------------------------
+# Baseline Model Definition
+# ------------------------------
