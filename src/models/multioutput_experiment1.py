@@ -3,7 +3,7 @@
 # ================================================================
 import os
 import sys
-import time
+
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
@@ -23,9 +23,6 @@ from sklearn.metrics import (
     f1_score,
     confusion_matrix,
 )
-
-# Import timm for Vision Transformer
-import timm
 
 # Ensure the helper functions and settings are imported
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
@@ -313,52 +310,147 @@ class MultiTaskCNN(nn.Module):
         return crop_pred, disease_detection_pred, disease_classification_pred
 
 # ------------------------------
-# MultiTaskViT Model Definition
+# MultiTaskViT Model Definition (Implemented from Scratch)
 # ------------------------------
+import math
+
+class PatchEmbedding(nn.Module):
+    def __init__(self, img_size=224, patch_size=16, in_channels=3, embed_dim=768):
+        super(PatchEmbedding, self).__init__()
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.num_patches = (img_size // patch_size) ** 2
+
+        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+    
+    def forward(self, x):
+        # x shape: (batch_size, in_channels, img_size, img_size)
+        x = self.proj(x)  # shape: (batch_size, embed_dim, num_patches_sqrt, num_patches_sqrt)
+        x = x.flatten(2)  # shape: (batch_size, embed_dim, num_patches)
+        x = x.transpose(1, 2)  # shape: (batch_size, num_patches, embed_dim)
+        return x
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, seq_len, embed_dim):
+        super(PositionalEncoding, self).__init__()
+        self.pos_embed = nn.Parameter(torch.zeros(1, seq_len, embed_dim))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+
+    def forward(self, x):
+        x = x + self.pos_embed
+        return x
+
+class TransformerEncoderLayer(nn.Module):
+    def __init__(self, embed_dim, num_heads, mlp_ratio=4.0, dropout=0.1):
+        super(TransformerEncoderLayer, self).__init__()
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, int(embed_dim * mlp_ratio)),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(int(embed_dim * mlp_ratio), embed_dim),
+            nn.Dropout(dropout),
+        )
+    
+    def forward(self, x):
+        # Self-attention
+        x_norm = self.norm1(x)
+        attn_output, _ = self.attn(x_norm, x_norm, x_norm)
+        x = x + attn_output  # Residual connection
+
+        # Feed-forward network
+        x_norm = self.norm2(x)
+        mlp_output = self.mlp(x_norm)
+        x = x + mlp_output  # Residual connection
+        return x
+
 class MultiTaskViT(nn.Module):
-    def __init__(self, num_crop_types, num_diseases):
+    def __init__(
+        self,
+        num_crop_types,
+        num_diseases,
+        img_size=224,
+        patch_size=16,
+        in_channels=3,
+        embed_dim=768,
+        depth=12,
+        num_heads=12,
+        mlp_ratio=4.0,
+        dropout=0.1,
+    ):
         super(MultiTaskViT, self).__init__()
+        self.embed_dim = embed_dim
+        self.patch_embed = PatchEmbedding(img_size, patch_size, in_channels, embed_dim)
+        num_patches = self.patch_embed.num_patches
 
-        # Load a pre-trained ViT model as feature extractor
-        self.feature_extractor = timm.create_model('vit_base_patch16_224', pretrained=True)
+        # Class token
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
 
-        num_features = self.feature_extractor.head.in_features
-        self.feature_extractor.head = nn.Identity()  # Remove the classification head
+        # Positional encoding
+        self.pos_embed = PositionalEncoding(seq_len=num_patches + 1, embed_dim=embed_dim)
 
-        # Task-specific layers
+        # Transformer encoder layers
+        self.layers = nn.ModuleList([
+            TransformerEncoderLayer(embed_dim, num_heads, mlp_ratio, dropout)
+            for _ in range(depth)
+        ])
+
+        self.norm = nn.LayerNorm(embed_dim)
+
+        # Task-specific heads
         # Crop classification head
         self.crop_head = nn.Sequential(
-            nn.Linear(num_features, 512),
+            nn.Linear(embed_dim, 512),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
+            nn.Dropout(dropout),
             nn.Linear(512, num_crop_types),
         )
 
         # Disease detection head (binary classification: healthy vs diseased)
         self.disease_detection_head = nn.Sequential(
-            nn.Linear(num_features, 256),
+            nn.Linear(embed_dim, 256),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
+            nn.Dropout(dropout),
             nn.Linear(256, 1),
             nn.Sigmoid(),
         )
 
         # Disease classification head
         self.disease_classification_head = nn.Sequential(
-            nn.Linear(num_features, 512),
+            nn.Linear(embed_dim, 512),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
+            nn.Dropout(dropout),
             nn.Linear(512, num_diseases),
         )
 
     def forward(self, x):
-        # Shared feature extraction
-        x = self.feature_extractor(x)
+        # Patch embedding
+        x = self.patch_embed(x)
+
+        # Concatenate class token
+        batch_size = x.size(0)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        # Add positional encoding
+        x = self.pos_embed(x)
+
+        # Transformer encoder
+        for layer in self.layers:
+            x = layer(x)
+
+        # Take the class token output
+        x = self.norm(x)
+        cls_output = x[:, 0]
 
         # Task-specific predictions
-        crop_pred = self.crop_head(x)
-        disease_detection_pred = self.disease_detection_head(x)
-        disease_classification_pred = self.disease_classification_head(x)
+        crop_pred = self.crop_head(cls_output)
+        disease_detection_pred = self.disease_detection_head(cls_output)
+        disease_classification_pred = self.disease_classification_head(cls_output)
 
         return crop_pred, disease_detection_pred, disease_classification_pred
 
@@ -414,8 +506,19 @@ num_diseases = len(train_dataset.class_to_idx["disease"])
 # Instantiate MultiTaskCNN
 cnn_model = MultiTaskCNN(num_crop_types, num_diseases)
 
-# Instantiate MultiTaskViT
-vit_model = MultiTaskViT(num_crop_types, num_diseases)
+# Instantiate MultiTaskViT from scratch
+vit_model = MultiTaskViT(
+    num_crop_types=num_crop_types,
+    num_diseases=num_diseases,
+    img_size=HEIGHT,
+    patch_size=16,
+    in_channels=3,
+    embed_dim=768,
+    depth=12,
+    num_heads=12,
+    mlp_ratio=4.0,
+    dropout=0.1,
+)
 
 # Move models to device and wrap with DataParallel if multiple GPUs are available
 if torch.cuda.device_count() > 1:
@@ -476,7 +579,8 @@ def train_model(
     valid_loader,
     device,
     num_epochs=NUM_EPOCHS,
-    model_name="Model"
+    model_name="Model",
+    max_grad_norm=None,
 ):
     """
     Training loop for the multi-task model.
@@ -501,6 +605,11 @@ def train_model(
             outputs = model(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
+
+            # Gradient clipping
+            if max_grad_norm is not None:
+                nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+
             optimizer.step()
 
             running_train_loss += loss.item()
@@ -572,7 +681,8 @@ cnn_trained_model, cnn_train_losses, cnn_val_losses, cnn_train_accuracies, cnn_v
     valid_loader,
     device,
     num_epochs=NUM_EPOCHS,
-    model_name="MultiTaskCNN"
+    model_name="MultiTaskCNN",
+    max_grad_norm=1.0,  # You can adjust this value
 )
 
 print("\nTraining MultiTaskViT Model")
@@ -585,7 +695,8 @@ vit_trained_model, vit_train_losses, vit_val_losses, vit_train_accuracies, vit_v
     valid_loader,
     device,
     num_epochs=NUM_EPOCHS,
-    model_name="MultiTaskViT"
+    model_name="MultiTaskViT",
+    max_grad_norm=1.0,  # Gradient clipping helps when training from scratch
 )
 
 # ================================================================
