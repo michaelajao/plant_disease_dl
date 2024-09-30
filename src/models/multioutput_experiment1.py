@@ -791,7 +791,7 @@ def plot_confusion_matrix(targets, predictions, classes, model_name, task_name):
     plt.savefig(f"../../reports/figures/{model_name}_{task_name}_confusion_matrix.pdf")
     plt.close()
 
-crop_classes = list(train_dataset.class_to_idx["crop_type"].keys())
+crop_classes = list(train_dataset.class_to_idx["crop_type"].keys())         
 
 # Confusion matrix for CNN model
 plot_confusion_matrix(
@@ -805,7 +805,7 @@ plot_confusion_matrix(
 # Confusion matrix for ViT model
 plot_confusion_matrix(
     vit_valid_results["crop"]["targets"],
-    vit_valid_results["crop"]["predictions"],
+    vit_valid_results["crop"]["predictions"],           
     crop_classes,
     "MultiTaskViT",
     "Crop_Type",
