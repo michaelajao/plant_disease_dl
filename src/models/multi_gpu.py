@@ -32,14 +32,14 @@ from helper_functions import *
 set_seeds(42)
 
 # Hyperparameters and configuration setup
-BATCH_SIZE = 32        # Number of samples per batch
+BATCH_SIZE = 32  # Number of samples per batch
 LEARNING_RATE = 0.001  # Learning rate for the optimizer
-NUM_EPOCHS = 20        # Number of epochs for training
+NUM_EPOCHS = 50  # Number of epochs for training
 HEIGHT, WIDTH = 224, 224  # Image dimensions
 
 # Data fractions for training and validation
-train_data_fraction = 0.5  # Use 50% of the training data
-valid_data_fraction = 0.5  # Use 50% of the validation data
+train_data_fraction = 1.0  # Use 100% of the training data
+valid_data_fraction = 1.0  # Use 100% of the validation data
 
 # Device configuration: use multiple GPUs if available
 if torch.cuda.device_count() > 1:
@@ -72,10 +72,12 @@ train_dir = os.path.join(data_path, "train")
 valid_dir = os.path.join(data_path, "valid")
 
 # Define image transformations (resize images and convert to tensors)
-transform = transforms.Compose([
-    transforms.Resize((HEIGHT, WIDTH)),
-    transforms.ToTensor(),
-])
+transform = transforms.Compose(
+    [
+        transforms.Resize((HEIGHT, WIDTH)),
+        transforms.ToTensor(),
+    ]
+)
 
 # Load the full training and validation datasets
 full_train_data = datasets.ImageFolder(train_dir, transform=transform)
@@ -95,12 +97,20 @@ valid_data = Subset(full_valid_data, valid_indices)
 
 # Data Loaders for training and validation data
 train_loader = DataLoader(
-    train_data, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
-    pin_memory=True, persistent_workers=True
+    train_data,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    num_workers=8,
+    pin_memory=True,
+    persistent_workers=True,
 )
 valid_loader = DataLoader(
-    valid_data, batch_size=BATCH_SIZE, shuffle=False, num_workers=8,
-    pin_memory=True, persistent_workers=True
+    valid_data,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=8,
+    pin_memory=True,
+    persistent_workers=True,
 )
 
 # ================================================================
@@ -109,6 +119,7 @@ valid_loader = DataLoader(
 
 # Get the number of classes
 output_size = len(full_train_data.classes)
+
 
 # ------------------------------
 # Baseline Model Definition
@@ -122,26 +133,35 @@ class BaselineModel(nn.Module):
         hidden_units (int): Number of units in the hidden layers.
         output_shape (int): Number of output classes.
     """
+
     def __init__(self, input_shape: int, hidden_units: int, output_shape: int):
         super(BaselineModel, self).__init__()
         # Define convolutional layers
         self.conv_block = nn.Sequential(
-            nn.Conv2d(in_channels=input_shape, out_channels=hidden_units,
-                      kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(
+                in_channels=input_shape,
+                out_channels=hidden_units,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
             nn.ReLU(),
             nn.MaxPool2d(2),
         )
         # Define fully connected layers
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(in_features=hidden_units * (HEIGHT // 2) * (WIDTH // 2),
-                      out_features=output_shape),
+            nn.Linear(
+                in_features=hidden_units * (HEIGHT // 2) * (WIDTH // 2),
+                out_features=output_shape,
+            ),
         )
 
     def forward(self, x):
         x = self.conv_block(x)  # Convolutional layers
         x = self.classifier(x)  # Fully connected layers
         return x
+
 
 # ------------------------------
 # ConvNetPlus Model Definition
@@ -155,12 +175,18 @@ class ConvNetPlus(nn.Module):
         hidden_units (int): Number of units in the hidden layers.
         output_shape (int): Number of output classes.
     """
+
     def __init__(self, input_shape: int, hidden_units: int, output_shape: int):
         super(ConvNetPlus, self).__init__()
         # First convolutional block
         self.conv_block_1 = nn.Sequential(
-            nn.Conv2d(in_channels=input_shape, out_channels=hidden_units,
-                      kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(
+                in_channels=input_shape,
+                out_channels=hidden_units,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
             nn.BatchNorm2d(hidden_units),
             nn.ReLU(),
             nn.MaxPool2d(2),
@@ -168,8 +194,13 @@ class ConvNetPlus(nn.Module):
         )
         # Second convolutional block
         self.conv_block_2 = nn.Sequential(
-            nn.Conv2d(in_channels=hidden_units, out_channels=hidden_units * 2,
-                      kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(
+                in_channels=hidden_units,
+                out_channels=hidden_units * 2,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
             nn.BatchNorm2d(hidden_units * 2),
             nn.ReLU(),
             nn.MaxPool2d(2),
@@ -178,8 +209,10 @@ class ConvNetPlus(nn.Module):
         # Fully connected layers
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(in_features=hidden_units * 2 * (HEIGHT // 4) * (WIDTH // 4),
-                      out_features=hidden_units * 4),
+            nn.Linear(
+                in_features=hidden_units * 2 * (HEIGHT // 4) * (WIDTH // 4),
+                out_features=hidden_units * 4,
+            ),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(in_features=hidden_units * 4, out_features=output_shape),
@@ -190,6 +223,7 @@ class ConvNetPlus(nn.Module):
         x = self.conv_block_2(x)
         x = self.classifier(x)
         return x
+
 
 # ------------------------------
 # TinyVGG Model Definition
@@ -203,33 +237,56 @@ class TinyVGG(nn.Module):
         hidden_units (int): Number of units in the hidden layers.
         output_shape (int): Number of output classes.
     """
+
     def __init__(self, input_shape: int, hidden_units: int, output_shape: int):
         super(TinyVGG, self).__init__()
         # First convolutional block
         self.conv_block_1 = nn.Sequential(
-            nn.Conv2d(in_channels=input_shape, out_channels=hidden_units,
-                      kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(
+                in_channels=input_shape,
+                out_channels=hidden_units,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
             nn.ReLU(),
-            nn.Conv2d(in_channels=hidden_units, out_channels=hidden_units,
-                      kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(
+                in_channels=hidden_units,
+                out_channels=hidden_units,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
             nn.ReLU(),
             nn.MaxPool2d(2),
         )
         # Second convolutional block
         self.conv_block_2 = nn.Sequential(
-            nn.Conv2d(in_channels=hidden_units, out_channels=hidden_units * 2,
-                      kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(
+                in_channels=hidden_units,
+                out_channels=hidden_units * 2,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
             nn.ReLU(),
-            nn.Conv2d(in_channels=hidden_units * 2, out_channels=hidden_units * 2,
-                      kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(
+                in_channels=hidden_units * 2,
+                out_channels=hidden_units * 2,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
             nn.ReLU(),
             nn.MaxPool2d(2),
         )
         # Fully connected layer
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(in_features=hidden_units * 2 * (HEIGHT // 4) * (WIDTH // 4),
-                      out_features=output_size),
+            nn.Linear(
+                in_features=hidden_units * 2 * (HEIGHT // 4) * (WIDTH // 4),
+                out_features=output_size,
+            ),
         )
 
     def forward(self, x):
@@ -238,15 +295,16 @@ class TinyVGG(nn.Module):
         x = self.classifier(x)
         return x
 
+
 # ------------------------------
 # EfficientNetV2 Model Definition
 # ------------------------------
 # EfficientNetV2 Model Definition
 # Instantiate the EfficientNetV2 model with pretrained weights
 efficientnetv2_model = timm.create_model(
-    'efficientnetv2_rw_s',  # Using EfficientNetV2 RW small version
-    pretrained=True,        # Use pretrained weights
-    num_classes=output_size  # Adjust output size to match number of classes
+    "efficientnetv2_rw_s",  # Using EfficientNetV2 RW small version
+    pretrained=True,  # Use pretrained weights
+    num_classes=output_size,  # Adjust output size to match number of classes
 )
 
 
@@ -255,13 +313,23 @@ efficientnetv2_model = timm.create_model(
 # ================================================================
 # Move models to device and wrap with DataParallel for multi-GPU support
 if torch.cuda.device_count() > 1:
-    baseline_model = nn.DataParallel(BaselineModel(input_shape=3, hidden_units=10, output_shape=output_size))
-    convnetplus_model = nn.DataParallel(ConvNetPlus(input_shape=3, hidden_units=32, output_shape=output_size))
-    tinyvgg_model = nn.DataParallel(TinyVGG(input_shape=3, hidden_units=64, output_shape=output_size))
+    baseline_model = nn.DataParallel(
+        BaselineModel(input_shape=3, hidden_units=10, output_shape=output_size)
+    )
+    convnetplus_model = nn.DataParallel(
+        ConvNetPlus(input_shape=3, hidden_units=32, output_shape=output_size)
+    )
+    tinyvgg_model = nn.DataParallel(
+        TinyVGG(input_shape=3, hidden_units=64, output_shape=output_size)
+    )
     efficientnetv2_model = nn.DataParallel(efficientnetv2_model)
 else:
-    baseline_model = BaselineModel(input_shape=3, hidden_units=10, output_shape=output_size)
-    convnetplus_model = ConvNetPlus(input_shape=3, hidden_units=32, output_shape=output_size)
+    baseline_model = BaselineModel(
+        input_shape=3, hidden_units=10, output_shape=output_size
+    )
+    convnetplus_model = ConvNetPlus(
+        input_shape=3, hidden_units=32, output_shape=output_size
+    )
     tinyvgg_model = TinyVGG(input_shape=3, hidden_units=64, output_shape=output_size)
 
 baseline_model.to(device)
@@ -276,13 +344,24 @@ loss_fn = nn.CrossEntropyLoss()
 baseline_optimizer = optim.Adam(baseline_model.parameters(), lr=LEARNING_RATE)
 convnetplus_optimizer = optim.SGD(convnetplus_model.parameters(), lr=LEARNING_RATE)
 tinyvgg_optimizer = optim.RMSprop(tinyvgg_model.parameters(), lr=LEARNING_RATE)
-efficientnetv2_optimizer = optim.Adam(efficientnetv2_model.parameters(), lr=LEARNING_RATE)
+efficientnetv2_optimizer = optim.Adam(
+    efficientnetv2_model.parameters(), lr=LEARNING_RATE
+)
 
 # Learning rate schedulers
-baseline_scheduler = optim.lr_scheduler.ReduceLROnPlateau(baseline_optimizer, mode='min', factor=0.1, patience=3)
-convnetplus_scheduler = optim.lr_scheduler.ReduceLROnPlateau(convnetplus_optimizer, mode='min', factor=0.1, patience=3)
-tinyvgg_scheduler = optim.lr_scheduler.ReduceLROnPlateau(tinyvgg_optimizer, mode='min', factor=0.1, patience=3)
-efficientnetv2_scheduler = optim.lr_scheduler.StepLR(efficientnetv2_optimizer, step_size=5, gamma=0.1)
+baseline_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    baseline_optimizer, mode="min", factor=0.1, patience=3
+)
+convnetplus_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    convnetplus_optimizer, mode="min", factor=0.1, patience=3
+)
+tinyvgg_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    tinyvgg_optimizer, mode="min", factor=0.1, patience=3
+)
+efficientnetv2_scheduler = optim.lr_scheduler.StepLR(
+    efficientnetv2_optimizer, step_size=5, gamma=0.1
+)
+
 
 # ================================================================
 # EarlyStopping Class Definition
@@ -305,6 +384,7 @@ class EarlyStopping:
         else:
             self.best_score = val_loss
             self.counter = 0
+
 
 # ================================================================
 # Training and Evaluation Functions
@@ -346,7 +426,7 @@ def train_model(
     val_accuracies = []
 
     early_stopping = EarlyStopping(patience=early_stopping_patience, min_delta=0.0)
-    best_valid_loss = float('inf')
+    best_valid_loss = float("inf")
     best_epoch = 0
     best_model_state = None
 
@@ -362,7 +442,9 @@ def train_model(
         correct_train = 0
         total_train = 0
 
-        for inputs, labels in tqdm(train_loader, desc=f"Training Epoch {epoch+1}", leave=False):
+        for inputs, labels in tqdm(
+            train_loader, desc=f"Training Epoch {epoch+1}", leave=False
+        ):
             inputs = inputs.to(device)
             labels = labels.to(device)
 
@@ -464,6 +546,7 @@ def train_model(
 
     return model, best_result
 
+
 # ================================================================
 # Plotting Functions
 # ================================================================
@@ -476,16 +559,21 @@ def plot_loss(history, model_name):
         model_name (str): Name of the model (for saving the plot).
     """
     plt.figure()
-    plt.plot(history['epochs'], history['train_losses'], label='Training Loss', linewidth=2)
-    plt.plot(history['epochs'], history['val_losses'], label='Validation Loss', linewidth=2)
-    plt.title(f'{model_name} Loss over Epochs', fontsize=18)
-    plt.xlabel('Epochs', fontsize=16)
-    plt.ylabel('Loss', fontsize=16)
+    plt.plot(
+        history["epochs"], history["train_losses"], label="Training Loss", linewidth=2
+    )
+    plt.plot(
+        history["epochs"], history["val_losses"], label="Validation Loss", linewidth=2
+    )
+    plt.title(f"{model_name} Loss over Epochs", fontsize=18)
+    plt.xlabel("Epochs", fontsize=16)
+    plt.ylabel("Loss", fontsize=16)
     plt.legend(fontsize=14)
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(f"../../reports/figures/{model_name}_loss.pdf")
     plt.close()
+
 
 def plot_accuracy(history, model_name):
     """
@@ -496,16 +584,27 @@ def plot_accuracy(history, model_name):
         model_name (str): Name of the model (for saving the plot).
     """
     plt.figure()
-    plt.plot(history['epochs'], history['train_accuracies'], label='Training Accuracy', linewidth=2)
-    plt.plot(history['epochs'], history['val_accuracies'], label='Validation Accuracy', linewidth=2)
-    plt.title(f'{model_name} Accuracy over Epochs', fontsize=18)
-    plt.xlabel('Epochs', fontsize=16)
-    plt.ylabel('Accuracy (%)', fontsize=16)
+    plt.plot(
+        history["epochs"],
+        history["train_accuracies"],
+        label="Training Accuracy",
+        linewidth=2,
+    )
+    plt.plot(
+        history["epochs"],
+        history["val_accuracies"],
+        label="Validation Accuracy",
+        linewidth=2,
+    )
+    plt.title(f"{model_name} Accuracy over Epochs", fontsize=18)
+    plt.xlabel("Epochs", fontsize=16)
+    plt.ylabel("Accuracy (%)", fontsize=16)
     plt.legend(fontsize=14)
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(f"../../reports/figures/{model_name}_accuracy.pdf")
     plt.close()
+
 
 # ================================================================
 # Training the Models
@@ -525,7 +624,7 @@ baseline_model, baseline_best = train_model(
     num_epochs=NUM_EPOCHS,
     model_name="BaselineModel",
     optimizer_name="Adam",
-    early_stopping_patience=5,
+    early_stopping_patience=3,
 )
 
 # ------------------------------
@@ -542,7 +641,7 @@ convnetplus_model, convnetplus_best = train_model(
     num_epochs=NUM_EPOCHS,
     model_name="ConvNetPlus",
     optimizer_name="SGD",
-    early_stopping_patience=5,
+    early_stopping_patience=3,
 )
 
 # ------------------------------
@@ -559,7 +658,7 @@ tinyvgg_model, tinyvgg_best = train_model(
     num_epochs=NUM_EPOCHS,
     model_name="TinyVGG",
     optimizer_name="RMSprop",
-    early_stopping_patience=5,
+    early_stopping_patience=3,
 )
 
 # ------------------------------
@@ -576,19 +675,16 @@ efficientnetv2_model, efficientnetv2_best = train_model(
     num_epochs=NUM_EPOCHS,
     model_name="EfficientNetV2",
     optimizer_name="Adam",
-    early_stopping_patience=5,
+    early_stopping_patience=3,
 )
 
 # ================================================================
 # Results Compilation and Saving
 # ================================================================
 # Combine the best results from each model
-best_results_df = pd.DataFrame([
-    baseline_best,
-    convnetplus_best,
-    tinyvgg_best,
-    efficientnetv2_best
-])
+best_results_df = pd.DataFrame(
+    [baseline_best, convnetplus_best, tinyvgg_best, efficientnetv2_best]
+)
 
 # Display the best results DataFrame for comparison
 print("\nBest Results for Each Model:")
@@ -596,6 +692,7 @@ print(best_results_df)
 
 # Save the combined best results to a CSV file
 best_results_df.to_csv("../../reports/results/model_best_results.csv", index=False)
+
 
 # ================================================================
 # Bar Chart Comparison Function
@@ -611,13 +708,15 @@ def plot_bar_comparison(results_list, metric, ylabel, title, filename):
         title (str): Title of the bar chart.
         filename (str): Filename to save the chart as a PDF.
     """
-    model_names = [result['model'] for result in results_list]
+    model_names = [result["model"] for result in results_list]
     metric_values = [result[metric] for result in results_list]
 
     plt.figure()
-    plt.bar(model_names, metric_values, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+    plt.bar(
+        model_names, metric_values, color=["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+    )
     plt.title(title, fontsize=18)
-    plt.xlabel('Model', fontsize=16)
+    plt.xlabel("Model", fontsize=16)
     plt.ylabel(ylabel, fontsize=16)
     plt.tight_layout()
 
@@ -625,44 +724,51 @@ def plot_bar_comparison(results_list, metric, ylabel, title, filename):
     plt.savefig(f"../../reports/figures/{filename}.pdf")
     plt.close()
 
+
 # ================================================================
 # Generate Bar Charts for Accuracy and Loss Comparison
 # ================================================================
 # Plot bar chart for best validation accuracy comparison
 plot_bar_comparison(
     results_list=[baseline_best, convnetplus_best, tinyvgg_best, efficientnetv2_best],
-    metric='best_valid_acc',
-    ylabel='Best Validation Accuracy (%)',
-    title='Best Validation Accuracy Comparison',
-    filename='best_validation_accuracy_comparison'
+    metric="best_valid_acc",
+    ylabel="Best Validation Accuracy (%)",
+    title="Best Validation Accuracy Comparison",
+    filename="best_validation_accuracy_comparison",
 )
 
 # Plot bar chart for best validation loss comparison
 plot_bar_comparison(
     results_list=[baseline_best, convnetplus_best, tinyvgg_best, efficientnetv2_best],
-    metric='best_valid_loss',
-    ylabel='Best Validation Loss',
-    title='Best Validation Loss Comparison',
-    filename='best_validation_loss_comparison'
+    metric="best_valid_loss",
+    ylabel="Best Validation Loss",
+    title="Best Validation Loss Comparison",
+    filename="best_validation_loss_comparison",
 )
 
 # Plot total training time comparison
-model_names = [baseline_best['model'], convnetplus_best['model'], tinyvgg_best['model'], efficientnetv2_best['model']]
+model_names = [
+    baseline_best["model"],
+    convnetplus_best["model"],
+    tinyvgg_best["model"],
+    efficientnetv2_best["model"],
+]
 training_times = [
-    baseline_best['total_training_time'],
-    convnetplus_best['total_training_time'],
-    tinyvgg_best['total_training_time'],
-    efficientnetv2_best['total_training_time']
+    baseline_best["total_training_time"],
+    convnetplus_best["total_training_time"],
+    tinyvgg_best["total_training_time"],
+    efficientnetv2_best["total_training_time"],
 ]
 
 plt.figure()
-plt.bar(model_names, training_times, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
-plt.title('Total Training Time Comparison', fontsize=18)
-plt.xlabel('Model', fontsize=16)
-plt.ylabel('Time (seconds)', fontsize=16)
+plt.bar(model_names, training_times, color=["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"])
+plt.title("Total Training Time Comparison", fontsize=18)
+plt.xlabel("Model", fontsize=16)
+plt.ylabel("Time (seconds)", fontsize=16)
 plt.tight_layout()
 plt.savefig("../../reports/figures/training_time_comparison.pdf")
 plt.close()
+
 
 # ================================================================
 # Additional Visualizations
@@ -697,24 +803,30 @@ def plot_sample_predictions(model, data_loader, model_name, num_samples=5):
                 image = images[idx].cpu().numpy().transpose((1, 2, 0))
                 image = np.clip(image, 0, 1)
 
-                prob = probs[idx][preds[idx]].item() * 100  # Get the probability of the predicted class
+                prob = (
+                    probs[idx][preds[idx]].item() * 100
+                )  # Get the probability of the predicted class
                 true_label = class_names[labels[idx]]
                 pred_label = class_names[preds[idx]]
-                title_color = 'green' if preds[idx] == labels[idx] else 'red'
+                title_color = "green" if preds[idx] == labels[idx] else "red"
 
                 plt.subplot(1, num_samples, images_displayed)
                 plt.imshow(image)
-                plt.title(f'True: {true_label}\nPred: {pred_label}\nConf: {prob:.1f}%',
-                          color=title_color, fontsize=10)
-                plt.axis('off')
+                plt.title(
+                    f"True: {true_label}\nPred: {pred_label}\nConf: {prob:.1f}%",
+                    color=title_color,
+                    fontsize=10,
+                )
+                plt.axis("off")
 
             if images_displayed >= num_samples:
                 break
 
-    plt.suptitle(f'Sample Predictions by {model_name}', fontsize=16)
+    plt.suptitle(f"Sample Predictions by {model_name}", fontsize=16)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.savefig(f"../../reports/figures/{model_name}_sample_predictions.pdf")
     plt.close()
+
 
 # Function to generate confusion matrix
 def generate_confusion_matrix(model, data_loader, model_name):
@@ -732,7 +844,11 @@ def generate_confusion_matrix(model, data_loader, model_name):
     class_names = full_train_data.classes
 
     with torch.no_grad():
-        for images, labels in tqdm(data_loader, desc=f"Generating Confusion Matrix for {model_name}", leave=False):
+        for images, labels in tqdm(
+            data_loader,
+            desc=f"Generating Confusion Matrix for {model_name}",
+            leave=False,
+        ):
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
             _, preds = torch.max(outputs, 1)
@@ -741,26 +857,33 @@ def generate_confusion_matrix(model, data_loader, model_name):
 
     # Compute confusion matrix
     cm = confusion_matrix(all_labels, all_preds)
-    cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    cm_normalized = cm.astype("float") / cm.sum(axis=1)[:, np.newaxis]
 
     plt.figure(figsize=(12, 10))
-    sns.heatmap(cm_normalized, annot=False, fmt=".2f", cmap='viridis',
-                xticklabels=class_names, yticklabels=class_names)
-    plt.xlabel('Predicted Label', fontsize=16)
-    plt.ylabel('True Label', fontsize=16)
-    plt.title(f'Confusion Matrix for {model_name}', fontsize=18)
+    sns.heatmap(
+        cm_normalized,
+        annot=False,
+        fmt=".2f",
+        cmap="viridis",
+        xticklabels=class_names,
+        yticklabels=class_names,
+    )
+    plt.xlabel("Predicted Label", fontsize=16)
+    plt.ylabel("True Label", fontsize=16)
+    plt.title(f"Confusion Matrix for {model_name}", fontsize=18)
     plt.xticks(rotation=90, fontsize=12)
     plt.yticks(rotation=0, fontsize=12)
     plt.tight_layout()
     plt.savefig(f"../../reports/figures/{model_name}_confusion_matrix.pdf")
     plt.close()
 
+
 # Generate sample predictions and confusion matrices for each model
 models = [
-    (baseline_model, 'BaselineModel'),
-    (convnetplus_model, 'ConvNetPlus'),
-    (tinyvgg_model, 'TinyVGG'),
-    (efficientnetv2_model, 'EfficientNetV2')
+    (baseline_model, "BaselineModel"),
+    (convnetplus_model, "ConvNetPlus"),
+    (tinyvgg_model, "TinyVGG"),
+    (efficientnetv2_model, "EfficientNetV2"),
 ]
 
 for model, model_name in models:
