@@ -25,7 +25,9 @@ def walk_through_dir(dir_path: str) -> None:
     dir_path (str): Path to directory to walk through.
     """
     for dirpath, dirnames, filenames in os.walk(dir_path):
-        print(f"There are {len(dirnames)} directories and {len(filenames)} images in '{dirpath}'.")
+        print(
+            f"There are {len(dirnames)} directories and {len(filenames)} images in '{dirpath}'."
+        )
 
 
 # Plotting decision boundaries for 2D data (useful for binary classification)
@@ -49,7 +51,11 @@ def plot_decision_boundary(model: nn.Module, X: torch.Tensor, y: torch.Tensor) -
     with torch.no_grad():
         y_logits = model(X_to_pred_on)
 
-    y_pred = torch.softmax(y_logits, dim=1).argmax(dim=1) if len(torch.unique(y)) > 2 else torch.round(torch.sigmoid(y_logits))
+    y_pred = (
+        torch.softmax(y_logits, dim=1).argmax(dim=1)
+        if len(torch.unique(y)) > 2
+        else torch.round(torch.sigmoid(y_logits))
+    )
     y_pred = y_pred.reshape(xx.shape).detach().numpy()
     plt.contourf(xx, yy, y_pred, cmap=plt.cm.RdYlBu, alpha=0.7)
     plt.scatter(X[:, 0], X[:, 1], c=y, s=40, cmap=plt.cm.RdYlBu)
@@ -86,7 +92,9 @@ def plot_loss_curves(results: dict) -> None:
 
 
 # Function to plot predictions vs. ground truth
-def plot_predictions(train_data, train_labels, test_data, test_labels, predictions=None) -> None:
+def plot_predictions(
+    train_data, train_labels, test_data, test_labels, predictions=None
+) -> None:
     """
     Plots the training data, test data, and predictions if provided.
 
@@ -137,7 +145,13 @@ def print_train_time(start: float, end: float, device=None) -> float:
 
 
 # Helper function to make predictions and plot images
-def pred_and_plot_image(model: nn.Module, image_path: str, class_names: List[str] = None, transform=None, device="cuda" if torch.cuda.is_available() else "cpu") -> None:
+def pred_and_plot_image(
+    model: nn.Module,
+    image_path: str,
+    class_names: List[str] = None,
+    transform=None,
+    device="cuda" if torch.cuda.is_available() else "cpu",
+) -> None:
     """
     Loads an image, makes a prediction using the model, and plots it with prediction label.
 
@@ -158,7 +172,7 @@ def pred_and_plot_image(model: nn.Module, image_path: str, class_names: List[str
         output = model(target_image)
         pred_probs = torch.softmax(output, dim=1)
         pred_label = torch.argmax(pred_probs, dim=1)
-    
+
     plt.imshow(target_image.squeeze().permute(1, 2, 0))
     if class_names:
         plt.title(f"Pred: {class_names[pred_label]} | Prob: {pred_probs.max():.3f}")
@@ -214,67 +228,71 @@ def download_data(source: str, destination: str, remove_source: bool = True) -> 
 
 # Customizing color cycle with monochrome settings for clarity in black-and-white printing
 mark_every = 0.1
-monochrome = (cycler('color', ['k']) *
-              cycler('markevery', [mark_every]) *
-              cycler('marker', ['', 'o', '^', 's', 'v']) *
-              cycler('linestyle', ['-', '--', ':', (0, (5, 2, 5, 5, 1, 4))]))
+monochrome = (
+    cycler("color", ["k"])
+    * cycler("markevery", [mark_every])
+    * cycler("marker", ["", "o", "^", "s", "v"])
+    * cycler("linestyle", ["-", "--", ":", (0, (5, 2, 5, 5, 1, 4))])
+)
 
-plt.rc('axes', prop_cycle=monochrome)
+plt.rc("axes", prop_cycle=monochrome)
 
 # Matplotlib configurations for better visualization aesthetics
-plt.rcParams.update({
-    "font.family": "serif",
-    "font.size": 16,
-    "figure.figsize": [12, 8],
-    "text.usetex": False,
-    "figure.facecolor": "white",
-    "figure.autolayout": True,
-    "figure.dpi": 600,
-    "savefig.dpi": 600,
-    "savefig.format": "pdf",
-    "savefig.bbox": "tight",
-    "axes.labelweight": "bold",
-    "axes.titleweight": "bold",
-    "axes.labelsize": 16,
-    "axes.titlesize": 18,
-    "axes.facecolor": "white",
-    "axes.grid": False,
-    "axes.spines.top": True,
-    "axes.spines.right": True,
-    "axes.formatter.limits": (0, 5),
-    "axes.formatter.use_mathtext": True,
-    "axes.formatter.useoffset": False,
-    "axes.xmargin": 0,
-    "axes.ymargin": 0,
-    "legend.fontsize": 14,
-    "legend.frameon": True,
-    "legend.loc": "best",
-    "lines.linewidth": 2.5,
-    "lines.markersize": 10,
-    "xtick.labelsize": 14,
-    "xtick.direction": "in",
-    "xtick.top": True,
-    "ytick.labelsize": 14,
-    "ytick.direction": "in",
-    "ytick.right": True,
-    "grid.color": "grey",
-    "grid.linestyle": "--",
-    "grid.linewidth": 0.75,
-    "errorbar.capsize": 4,
-    "figure.subplot.wspace": 0.4,
-    "figure.subplot.hspace": 0.4,
-    "image.cmap": "viridis",
-    "lines.antialiased": True,
-    "patch.antialiased": True,
-    "text.antialiased": True,
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-    "axes.labelpad": 10,
-    "axes.titlepad": 15,
-    "xtick.major.pad": 5,
-    "ytick.major.pad": 5,
-    "figure.subplot.left": 0.1,
-    "figure.subplot.right": 0.95,
-    "figure.subplot.bottom": 0.1,
-    "figure.subplot.top": 0.9
-})
+plt.rcParams.update(
+    {
+        "font.family": "serif",
+        "font.size": 16,
+        "figure.figsize": [12, 8],
+        "text.usetex": False,
+        "figure.facecolor": "white",
+        "figure.autolayout": True,
+        "figure.dpi": 600,
+        "savefig.dpi": 600,
+        "savefig.format": "pdf",
+        "savefig.bbox": "tight",
+        "axes.labelweight": "bold",
+        "axes.titleweight": "bold",
+        "axes.labelsize": 16,
+        "axes.titlesize": 18,
+        "axes.facecolor": "white",
+        "axes.grid": False,
+        "axes.spines.top": True,
+        "axes.spines.right": True,
+        "axes.formatter.limits": (0, 5),
+        "axes.formatter.use_mathtext": True,
+        "axes.formatter.useoffset": False,
+        "axes.xmargin": 0,
+        "axes.ymargin": 0,
+        "legend.fontsize": 14,
+        "legend.frameon": True,
+        "legend.loc": "best",
+        "lines.linewidth": 2.5,
+        "lines.markersize": 10,
+        "xtick.labelsize": 14,
+        "xtick.direction": "in",
+        "xtick.top": True,
+        "ytick.labelsize": 14,
+        "ytick.direction": "in",
+        "ytick.right": True,
+        "grid.color": "grey",
+        "grid.linestyle": "--",
+        "grid.linewidth": 0.75,
+        "errorbar.capsize": 4,
+        "figure.subplot.wspace": 0.4,
+        "figure.subplot.hspace": 0.4,
+        "image.cmap": "viridis",
+        "lines.antialiased": True,
+        "patch.antialiased": True,
+        "text.antialiased": True,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "axes.labelpad": 10,
+        "axes.titlepad": 15,
+        "xtick.major.pad": 5,
+        "ytick.major.pad": 5,
+        "figure.subplot.left": 0.1,
+        "figure.subplot.right": 0.95,
+        "figure.subplot.bottom": 0.1,
+        "figure.subplot.top": 0.9,
+    }
+)
