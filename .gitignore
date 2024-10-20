@@ -92,3 +92,4 @@ plant-village-dataset-updated.zip
 src/models/*.pth
 models/*.pth
 models/*.pt
+Plant_leaf_diseases_dataset_without_augmentation.zip

@@ -53,6 +53,9 @@ The dataset used in this project is the New Plant Diseases Dataset (Augmented), 
 
 **Note**: Due to the size of the dataset, it is not included in this repository. Please download it separately and place it in the appropriate directory as instructed in the Data Preparation section.
 
+dataset: [New Plant Diseases Dataset (Augmented) on Kaggle](https://www.kaggle.com/vipoooool/new-plant-diseases-dataset)
+dataset: [Plant village dataset on mendeley data](https://data.mendeley.com/datasets/tywbtsjrjv/1)
+
 ## Getting Started
 
 ### Prerequisites
