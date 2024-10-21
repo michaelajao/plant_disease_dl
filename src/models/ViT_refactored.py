@@ -1,4 +1,4 @@
-# src/models/ViT_refactored.py
+# train_vit_model.py
 
 # ================================================================
 # Import Necessary Libraries
@@ -17,7 +17,7 @@ import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 
 # tqdm for progress bars
@@ -27,17 +27,28 @@ from tqdm.auto import tqdm
 import warnings
 warnings.filterwarnings("ignore")
 
-# Ensure the helper functions and settings are imported
-# (Assuming helper_functions.py exists and contains set_seeds)
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-from helper_functions import set_seeds  # Removed accuracy_fn as it's unused
-from helper_functions import *
+# For mixed precision training
+from torch.cuda.amp import autocast, GradScaler
+
+# For Weights & Biases integration
+import wandb
+
+# For model definitions
+import timm
+
+# ================================================================
+# Helper Functions and Settings
+# ================================================================
+# Assuming helper_functions.py exists and contains set_seeds
+# Adjust the path as necessary
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
+from helper_functions import set_seeds  # Adjust import based on your project structure
 
 # ================================================================
 # Setup Logging
 # ================================================================
 logging.basicConfig(
-    filename='training_errors.log',
+    filename='vit_training_errors.log',
     filemode='a',
     format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.ERROR
@@ -59,6 +70,9 @@ HEIGHT, WIDTH = 224, 224 # Image dimensions
 # Early Stopping Parameters
 EARLY_STOPPING_PATIENCE = 10  # Increased patience for early stopping
 
+# W&B Project Name
+WANDB_PROJECT_NAME = "Plant_Leaf_Disease_ViT"
+
 # ================================================================
 # Device Configuration
 # ================================================================
@@ -72,8 +86,8 @@ print(f"Using device: {device}")
 # Directory Setup
 # ================================================================
 
-# Define project root (assuming this script is in src/models/)
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+# Define project root (assuming this script is in the project root)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
 
 # Define directories for data and models
 data_path = os.path.join(
@@ -90,7 +104,7 @@ valid_dir = os.path.join(data_path, "valid")
 output_dirs = [
     os.path.join(project_root, "reports", "results"),
     os.path.join(project_root, "reports", "figures"),
-    os.path.join(project_root, "models"),
+    os.path.join(project_root, "models", "ViT"),
 ]
 
 # Create output directories if they don't exist
@@ -145,7 +159,7 @@ else:
 # You can adjust the threshold as needed
 minority_threshold = 1000  # Classes with fewer than 1000 samples are considered minority
 
-# Compute label counts from the training set
+# Path to training split CSV
 train_split_csv = os.path.join(data_path, "train_split.csv")
 if os.path.exists(train_split_csv):
     train_df = pd.read_csv(train_split_csv)
@@ -161,7 +175,7 @@ for cls in minority_classes:
     print(f"Class {cls} ({idx_to_disease.get(cls, 'Unknown')}) with {train_label_counts[cls]} samples")
 
 # ================================================================
-# Custom Dataset Class with Class-Specific Augmentations
+# Custom Dataset Class
 # ================================================================
 
 class PlantDiseaseDataset(Dataset):
@@ -247,55 +261,7 @@ class PlantDiseaseDataset(Dataset):
         return image, label_idx
 
 # ================================================================
-# Split Dataset into Training, Validation, and Test Sets
-# ================================================================
-
-# Paths to CSV files
-full_csv = os.path.join(data_path, "dataset_single_task_disease.csv")
-train_split_csv = os.path.join(data_path, "train_split.csv")
-valid_split_csv = os.path.join(data_path, "valid_split.csv")
-test_split_csv = os.path.join(data_path, "test_split.csv")  # New test split
-
-# Read the full CSV
-if os.path.exists(full_csv):
-    full_df = pd.read_csv(full_csv)
-    print(f"\nFull dataset contains {len(full_df)} samples.")
-else:
-    print(f"Error: Full dataset CSV not found at {full_csv}. Exiting.")
-    sys.exit(1)
-
-# Check if 'split' column exists
-if "split" in full_df.columns:
-    train_df = full_df[full_df["split"] == "train"].reset_index(drop=True)
-    valid_df = full_df[full_df["split"] == "valid"].reset_index(drop=True)
-    test_df = full_df[full_df["split"] == "test"].reset_index(drop=True) if 'test' in full_df['split'].unique() else pd.DataFrame()
-    print("Dataset split based on 'split' column.")
-else:
-    # If no 'split' column, perform an 80-10-10 split
-    from sklearn.model_selection import train_test_split
-
-    if 'label' not in full_df.columns:
-        raise ValueError("CSV file must contain a 'label' column for stratified splitting.")
-
-    train_df, temp_df = train_test_split(
-        full_df, test_size=0.2, random_state=42, stratify=full_df["label"]
-    )
-    valid_df, test_df = train_test_split(
-        temp_df, test_size=0.5, random_state=42, stratify=temp_df["label"]
-    )
-    print("Dataset split into 80% training, 10% validation, and 10% testing.")
-
-# Save the split CSVs
-train_df.to_csv(train_split_csv, index=False)
-valid_df.to_csv(valid_split_csv, index=False)
-if not test_df.empty:
-    test_df.to_csv(test_split_csv, index=False)
-    print(f"Saved test split to {test_split_csv} with {len(test_df)} samples.")
-print(f"Saved training split to {train_split_csv} with {len(train_df)} samples.")
-print(f"Saved validation split to {valid_split_csv} with {len(valid_df)} samples.")
-
-# ================================================================
-# Data Transforms with Class-Specific Augmentations (Reintroduced Normalization)
+# Data Transforms with Class-Specific Augmentations
 # ================================================================
 
 # Define transforms for majority classes
@@ -326,50 +292,56 @@ transform_minority = transforms.Compose([
 ])
 
 # ================================================================
-# Initialize Datasets and DataLoaders (Using Pre-trained ViT)
+# Initialize Datasets and DataLoaders (Using WeightedRandomSampler)
 # ================================================================
 
-# Initialize training, validation, and test datasets with class-specific transforms
+# Path to validation split CSV
+valid_split_csv = os.path.join(data_path, "valid_split.csv")
+if os.path.exists(valid_split_csv):
+    valid_df = pd.read_csv(valid_split_csv)
+    valid_dataset = PlantDiseaseDataset(
+        csv_file=valid_split_csv,
+        images_dir=valid_dir,
+        transform_major=transform_major,  # Validation should not have augmentation
+        transform_minority=None,          # No augmentation for validation
+        minority_classes=[],              # No augmentation needed
+        image_col='image',
+        label_col='label'
+    )
+else:
+    print(f"Error: Validation split CSV not found at {valid_split_csv}. Exiting.")
+    sys.exit(1)
+
+# Initialize training dataset
 train_dataset = PlantDiseaseDataset(
     csv_file=train_split_csv,
     images_dir=train_dir,
     transform_major=transform_major,
     transform_minority=transform_minority,
     minority_classes=minority_classes,
-    image_col='image',  # Ensure this matches the actual column name in your CSV
-    label_col='label'   # Ensure this matches the actual column name in your CSV
-)
-
-valid_dataset = PlantDiseaseDataset(
-    csv_file=valid_split_csv,
-    images_dir=valid_dir,
-    transform_major=transform_major,  # Validation should not have augmentation
-    transform_minority=None,          # No augmentation for validation
-    minority_classes=[],              # No augmentation needed
     image_col='image',
     label_col='label'
 )
 
-# Initialize test dataset if available
-if os.path.exists(test_split_csv):
-    test_dataset = PlantDiseaseDataset(
-        csv_file=test_split_csv,
-        images_dir=valid_dir,  # Assuming test images are in the same directory as validation
-        transform_major=transform_major,  # No augmentation
-        transform_minority=None,
-        minority_classes=[],
-        image_col='image',
-        label_col='label'
-    )
-else:
-    test_dataset = None
-    print("No test split found. Skipping test dataset initialization.")
+# Create WeightedRandomSampler for the training DataLoader
+# Compute class counts and weights
+class_counts = train_df['label'].value_counts().sort_index().values
+class_weights = 1. / class_counts
+samples_weight = class_weights[train_df['label'].values]
+samples_weight = torch.from_numpy(samples_weight).double()
 
-# Create DataLoaders (Using shuffle=True for training)
+# Create the sampler
+sampler = WeightedRandomSampler(
+    weights=samples_weight,
+    num_samples=len(samples_weight),
+    replacement=True
+)
+
+# Create DataLoaders
 train_loader = DataLoader(
     train_dataset, 
     batch_size=BATCH_SIZE, 
-    shuffle=True,  # Enabled shuffling for better generalization
+    sampler=sampler,  # Use sampler instead of shuffle
     num_workers=4, 
     pin_memory=True if torch.cuda.is_available() else False
 )
@@ -382,19 +354,9 @@ valid_loader = DataLoader(
     pin_memory=True if torch.cuda.is_available() else False
 )
 
-test_loader = DataLoader(
-    test_dataset, 
-    batch_size=BATCH_SIZE, 
-    shuffle=False, 
-    num_workers=4, 
-    pin_memory=True if torch.cuda.is_available() else False
-) if test_dataset else None
-
 # Display dataset information
 print(f"\nNumber of training samples: {len(train_dataset)}")
 print(f"Number of validation samples: {len(valid_dataset)}")
-if test_dataset:
-    print(f"Number of test samples: {len(test_dataset)}")
 print(f"Number of classes: {len(disease_to_idx)}")
 print(f"Classes: {list(disease_to_idx.keys())}")
 
@@ -408,322 +370,8 @@ else:
     print("\nTraining dataset is empty. Please check your dataset and label mappings.")
 
 # ================================================================
-# Data Visualization: Plotting Label Distribution (Removed Initial Visualization)
-# ================================================================
-def plot_label_distribution_pandas(csv_path, idx_to_disease, dataset_name="Training"):
-    """
-    Plot the distribution of labels using Pandas' built-in plotting.
-    
-    Args:
-        csv_path (str): Path to the CSV file.
-        idx_to_disease (dict): Mapping from index to disease name.
-        dataset_name (str): Name of the dataset split (for the plot title).
-    """
-    if not os.path.exists(csv_path):
-        print(f"CSV file not found at {csv_path}. Cannot plot label distribution.")
-        return
-
-    df = pd.read_csv(csv_path)
-    print(f"\nPlotting label distribution using all {len(df)} samples from the {dataset_name} dataset.")
-
-    # Verify 'label' column exists
-    if 'label' not in df.columns:
-        print(f"'label' column not found in {csv_path}. Cannot plot label distribution.")
-        return
-
-    # Compute label counts
-    label_counts = df['label'].value_counts().sort_index()
-
-    # Map label indices to disease names
-    label_counts.index = label_counts.index.map(idx_to_disease)
-
-    # Handle any unmapped labels
-    label_counts = label_counts.fillna("Unknown")
-
-    # Debug: Check label counts
-    print(f"Label counts:\n{label_counts}")
-
-    # Plot using Pandas
-    plt.figure(figsize=(14, 8))
-    label_counts.plot(kind='bar', color='skyblue')
-    plt.title(f"Label Distribution in {dataset_name} Dataset")
-    plt.xlabel("Disease")
-    plt.ylabel("Count")
-    plt.xticks(rotation=90)
-    plt.tight_layout()
-    # Save the plot in the figures directory
-    plt.savefig(os.path.join(output_dirs[1], f"label_distribution_{dataset_name.lower()}.pdf"))
-    plt.show()
-
-# Plot label distribution for training and validation sets
-plot_label_distribution_pandas(train_split_csv, idx_to_disease, "Training")
-plot_label_distribution_pandas(valid_split_csv, idx_to_disease, "Validation")
-if test_split_csv and os.path.exists(test_split_csv):
-    plot_label_distribution_pandas(test_split_csv, idx_to_disease, "Test")
-
-# ================================================================
-# Visualization Functions to Verify Augmentation (Removed Initial Visualization)
-# ================================================================
-
-def plot_augmented_samples(dataset, idx_to_disease, num_samples=5):
-    """
-    Plot multiple augmented samples from each minority class.
-    
-    Args:
-        dataset (Dataset): The dataset to sample from.
-        idx_to_disease (dict): Mapping from label index to disease name.
-        num_samples (int): Number of samples to plot per class.
-    """
-    # Create a dictionary to hold samples for each minority class
-    samples_per_class = {cls: [] for cls in dataset.minority_classes}
-
-    # Iterate through the dataset and collect samples
-    for img, label in dataset:
-        if label.item() in dataset.minority_classes:
-            samples_per_class[label.item()].append(img)
-            if all(len(imgs) >= num_samples for imgs in samples_per_class.values()):
-                break  # Stop once we have enough samples for each class
-
-    # Plot the samples
-    for cls, images in samples_per_class.items():
-        plt.figure(figsize=(15, 3))
-        plt.suptitle(f"Augmented Samples for Class: {idx_to_disease.get(cls, 'Unknown')}", fontsize=16)
-        for i in range(num_samples):
-            if i < len(images):
-                image = images[i].cpu().numpy().transpose((1, 2, 0))
-                # Unnormalize for display
-                image = image * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-                image = np.clip(image, 0, 1)
-                plt.subplot(1, num_samples, i+1)
-                plt.imshow(image)
-                plt.axis('off')
-        # Save the plot in the figures directory
-        plt.savefig(os.path.join(output_dirs[1], f"augmented_samples_class_{cls}.pdf"))
-        plt.show()
-
-def plot_original_and_augmented(dataset, idx_to_disease, class_index, num_pairs=3):
-    """
-    Plot original and augmented image pairs from a specified class.
-    
-    Args:
-        dataset (Dataset): The dataset to sample from.
-        idx_to_disease (dict): Mapping from label index to disease name.
-        class_index (int): The label index of the class to visualize.
-        num_pairs (int): Number of image pairs to plot.
-    """
-    plt.figure(figsize=(10, num_pairs * 4))
-    plt.suptitle(f"Original vs. Augmented Samples for Class: {idx_to_disease.get(class_index, 'Unknown')}", fontsize=16)
-    
-    count = 0
-    for idx in range(len(dataset)):
-        img, label = dataset[idx]
-        if label.item() == class_index:
-            # Original Image (without augmentation)
-            original_transform = transforms.Compose([
-                transforms.Resize((HEIGHT, WIDTH)),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],   # Mean for ImageNet
-                    std=[0.229, 0.224, 0.225]     # Std for ImageNet
-                ),
-            ])
-            img_name = dataset.annotations.iloc[idx]['image']
-            img_path = os.path.join(dataset.images_dir, os.path.basename(img_name))
-            try:
-                original_image = Image.open(img_path).convert("RGB")
-                original_image = original_transform(original_image).numpy().transpose((1, 2, 0))
-                # Unnormalize for display
-                original_image = original_image * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-                original_image = np.clip(original_image, 0, 1)
-            except Exception as e:
-                print(f"Error loading image {img_path}: {e}")
-                continue
-            
-            # Augmented Image
-            augmented_image = img.numpy().transpose((1, 2, 0))
-            # Unnormalize for display
-            augmented_image = augmented_image * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-            augmented_image = np.clip(augmented_image, 0, 1)
-            
-            # Plot Original
-            plt.subplot(num_pairs, 2, 2*count + 1)
-            plt.imshow(original_image)
-            plt.title("Original")
-            plt.axis('off')
-            
-            # Plot Augmented
-            plt.subplot(num_pairs, 2, 2*count + 2)
-            plt.imshow(augmented_image)
-            plt.title("Augmented")
-            plt.axis('off')
-            
-            count += 1
-            if count >= num_pairs:
-                break
-    
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    # Save the plot in the figures directory
-    plt.savefig(os.path.join(output_dirs[1], f"original_vs_augmented_class_{class_index}.pdf"))
-    plt.show()
-
-def plot_random_image_from_loader(dataloader, idx_to_disease, output_dirs):
-    """
-    Plot a random image from the dataloader with its label.
-
-    Args:
-        dataloader (DataLoader): DataLoader to fetch the image from.
-        idx_to_disease (dict): Mapping from index to disease name.
-        output_dirs (list): List of output directories for saving plots.
-    """
-    if len(dataloader) == 0:
-        print("Dataloader is empty. Cannot plot image.")
-        return
-
-    # Get a single batch of data
-    try:
-        data_iter = iter(dataloader)
-        images, labels = next(data_iter)
-    except StopIteration:
-        print("Dataloader has no data.")
-        return
-
-    if len(images) == 0:
-        print("No images in the batch to plot.")
-        return
-
-    # Randomly select an index from the batch
-    random_idx = random.randint(0, len(images) - 1)
-
-    # Select the random image and label
-    image = images[random_idx]
-    label = labels[random_idx]
-
-    # Convert the image to numpy array
-    image = image.cpu().numpy().transpose((1, 2, 0))
-    # Unnormalize for display
-    image = image * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-    image = np.clip(image, 0, 1)
-
-    # Plot the image
-    plt.figure(figsize=(5, 5))
-    plt.imshow(image)
-    label_name = idx_to_disease.get(label.item(), "Unknown")
-    plt.title(f"Label: {label_name}")
-    plt.axis('off')
-    # Save the plot in the figures directory
-    plt.savefig(os.path.join(output_dirs[1], "random_image_from_loader.pdf"))
-    plt.show()
-
-# ================================================================
-# Visualization of Training Data
-# ================================================================
-
-# Uncomment the following lines if you wish to visualize augmented samples
-# plot_augmented_samples(train_dataset, idx_to_disease, num_samples=5)
-
-# Uncomment the following lines to plot original vs augmented images for a specific class
-# Choose a minority class to visualize, e.g., the first minority class
-# if minority_classes:
-#     visualize_class_index = minority_classes[0]
-#     plot_original_and_augmented(train_dataset, idx_to_disease, visualize_class_index, num_pairs=3)
-
-# Plot a random image from the train_loader
-if len(train_dataset) > 0:
-    plot_random_image_from_loader(train_loader, idx_to_disease, output_dirs)
-else:
-    print("Cannot plot image: Training dataset is empty.")
-
-# ================================================================
-# Verification Functions for Image Integrity
-# ================================================================
-
-def verify_csv_images(csv_path, images_dir, split_name=""):
-    """
-    Verify that all images listed in the CSV exist in the specified directory.
-    
-    Args:
-        csv_path (str): Path to the CSV file.
-        images_dir (str): Directory where images are stored.
-        split_name (str): Name of the dataset split (for logging purposes).
-    """
-    if not os.path.exists(csv_path):
-        print(f"CSV file not found at {csv_path}. Cannot verify images.")
-        return
-    
-    df = pd.read_csv(csv_path)
-    missing_images = []
-    for img in df['image']:
-        img_path = os.path.join(images_dir, os.path.basename(img))
-        if not os.path.exists(img_path):
-            missing_images.append(img)
-    
-    if missing_images:
-        print(f"{split_name} Split: {len(missing_images)} images are missing.")
-        # Log missing images
-        with open('missing_images.log', 'a') as log_file:
-            for img in missing_images:
-                log_file.write(f"Missing image: {img}\n")
-    else:
-        print(f"{split_name} Split: All images are present.")
-
-def check_corrupted_images(csv_path, images_dir, split_name=""):
-    """
-    Check for corrupted images in the dataset.
-    
-    Args:
-        csv_path (str): Path to the CSV file.
-        images_dir (str): Directory where images are stored.
-        split_name (str): Name of the dataset split (for logging purposes).
-    """
-    if not os.path.exists(csv_path):
-        print(f"CSV file not found at {csv_path}. Cannot check images.")
-        return
-    
-    df = pd.read_csv(csv_path)
-    corrupted_images = []
-    for img in df['image']:
-        img_path = os.path.join(images_dir, os.path.basename(img))
-        try:
-            with Image.open(img_path) as image:
-                image.verify()  # Verify that it is, in fact, an image
-        except (IOError, SyntaxError) as e:
-            corrupted_images.append(img)
-    
-    if corrupted_images:
-        print(f"{split_name} Split: {len(corrupted_images)} images are corrupted.")
-        # Log corrupted images
-        with open('corrupted_images.log', 'a') as log_file:
-            for img in corrupted_images:
-                log_file.write(f"Corrupted image: {img}\n")
-    else:
-        print(f"{split_name} Split: No corrupted images found.")
-
-# Verify images in the training split
-verify_csv_images(train_split_csv, train_dir, split_name="Training")
-
-# Verify images in the validation split
-verify_csv_images(valid_split_csv, valid_dir, split_name="Validation")
-
-# Verify images in the test split if available
-if test_split_csv and os.path.exists(test_split_csv):
-    verify_csv_images(test_split_csv, valid_dir, split_name="Test")
-
-# Check for corrupted images in the training split
-check_corrupted_images(train_split_csv, train_dir, split_name="Training")
-
-# Check for corrupted images in the validation split
-check_corrupted_images(valid_split_csv, valid_dir, split_name="Validation")
-
-# Check for corrupted images in the test split if available
-if test_split_csv and os.path.exists(test_split_csv):
-    check_corrupted_images(test_split_csv, valid_dir, split_name="Test")
-
-# ================================================================
 # Vision Transformer (ViT) Architecture
 # ================================================================
-
-# Since we're training from scratch, we'll use a custom ViT implementation
-# However, for efficiency and reliability, consider using torchvision's ViT models in the future
 
 class PatchEmbedding(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_channels=3, embed_dim=768):
@@ -976,12 +624,15 @@ class VisionTransformer(nn.Module):
 # Model Initialization
 # ================================================================
 
+# Define the number of classes
+output_size = len(disease_to_idx)
+
 # Initialize Vision Transformer model from scratch
-model = VisionTransformer(
+vit_model = VisionTransformer(
     img_size=HEIGHT,
     patch_size=16,
     in_channels=3,
-    num_classes=len(disease_to_idx),
+    num_classes=output_size,
     embed_dim=768,
     depth=12,
     num_heads=12,
@@ -990,30 +641,91 @@ model = VisionTransformer(
 )
 
 # Move the model to the configured device
-model = model.to(device)
+vit_model = vit_model.to(device)
 
 # If multiple GPUs are available, use DataParallel
 if num_gpus > 1:
-    model = nn.DataParallel(model)
+    vit_model = nn.DataParallel(vit_model)
 
 # ================================================================
 # Loss Function and Optimizer
 # ================================================================
 
-# Define loss function with class weights to handle imbalance
-# Compute class weights inversely proportional to class frequencies
-class_counts = train_df['label'].value_counts().sort_index().values
-class_weights = 1. / class_counts
-class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
-
-# Define loss function
-criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
+# Remove class weighting from loss function since we're using WeightedRandomSampler
+criterion = nn.CrossEntropyLoss()
 
 # Define optimizer with a lower learning rate for training from scratch
-optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+optimizer = optim.AdamW(vit_model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
 
 # Define a learning rate scheduler
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+
+# ================================================================
+# Callbacks for Training Monitoring
+# ================================================================
+
+class EarlyStopping:
+    """
+    Early stops the training if validation loss doesn't improve after a given patience.
+    """
+    def __init__(self, patience=10, verbose=False, delta=0.0, path='best_model.pth'):
+        """
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+            verbose (bool): If True, prints a message for each validation loss improvement.
+            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
+            path (str): Path for the checkpoint to be saved to.
+        """
+        self.patience = patience
+        self.verbose = verbose
+        self.delta = delta
+        self.path = path
+
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+
+    def __call__(self, val_loss, model):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+            self.save_checkpoint(val_loss, model)
+        elif val_loss > self.best_loss - self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        '''Saves model when validation loss decrease.'''
+        if self.verbose:
+            print(f'Validation loss decreased ({self.best_loss:.6f} --> {val_loss:.6f}).  Saving model ...')
+        torch.save(model.state_dict(), self.path)
+
+class ModelCheckpoint:
+    """
+    Saves the model based on validation loss.
+    """
+    def __init__(self, path='best_val_loss_model.pth', verbose=False):
+        """
+        Args:
+            path (str): Path to save the model.
+            verbose (bool): If True, prints messages when saving the model.
+        """
+        self.best_loss = None
+        self.path = path
+        self.verbose = verbose
+
+    def __call__(self, val_loss, model):
+        if self.best_loss is None or val_loss < self.best_loss:
+            if self.verbose:
+                print(f"Validation loss improved ({self.best_loss if self.best_loss else 'N/A'} --> {val_loss:.6f}). Saving model...")
+            self.best_loss = val_loss
+            torch.save(model.state_dict(), self.path)
 
 # ================================================================
 # Training and Validation Functions
@@ -1021,17 +733,20 @@ scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
 from sklearn.metrics import classification_report, confusion_matrix
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
+def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler, epoch, log_interval=10):
     """
-    Trains the model for one epoch.
-
+    Trains the model for one epoch using mixed precision.
+    
     Args:
         model (nn.Module): The model to train.
         dataloader (DataLoader): Training data loader.
         criterion (nn.Module): Loss function.
         optimizer (Optimizer): Optimizer.
         device (torch.device): Device to train on.
-
+        scaler (GradScaler): GradScaler for mixed precision.
+        epoch (int): Current epoch number.
+        log_interval (int): How often to log batch metrics.
+    
     Returns:
         tuple: (epoch_loss, epoch_accuracy)
     """
@@ -1046,37 +761,54 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
 
         optimizer.zero_grad()
 
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+        # Mixed precision training
+        with autocast():
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         running_loss += loss.item() * inputs.size(0)
         _, preds = torch.max(outputs, 1)
         correct_predictions += torch.sum(preds == labels.data)
         total_samples += inputs.size(0)
 
-        # Enhanced Logging: Log every 10 batches
-        if (batch_idx + 1) % 10 == 0:
-            print(f"Batch {batch_idx+1}/{len(dataloader)} - Loss: {loss.item():.4f}")
+        # Enhanced Logging: Log every 'log_interval' batches
+        if (batch_idx + 1) % log_interval == 0:
+            unique, counts = np.unique(labels.cpu().numpy(), return_counts=True)
+            class_distribution = dict(zip(unique, counts))
+            wandb.log({
+                f"{model_name}/train_loss": loss.item(),
+                f"{model_name}/batch_train_accuracy": torch.sum(preds == labels.data).item() / inputs.size(0),
+                f"{model_name}/batch_class_distribution": class_distribution
+            })
+            print(f"Epoch [{epoch+1}], Batch [{batch_idx+1}/{len(dataloader)}] - Loss: {loss.item():.4f} | Class Distribution: {class_distribution}")
 
     epoch_loss = running_loss / total_samples
     epoch_acc = correct_predictions.double() / total_samples
+
+    wandb.log({
+        f"{model_name}/epoch_train_loss": epoch_loss,
+        f"{model_name}/epoch_train_accuracy": epoch_acc.item()
+    })
+
     return epoch_loss, epoch_acc.item()
 
-def validate(model, dataloader, criterion, device, collect_metrics=False):
+def validate(model, dataloader, criterion, device, collect_metrics=True):
     """
     Validates the model.
-
+    
     Args:
         model (nn.Module): The model to validate.
         dataloader (DataLoader): Validation data loader.
         criterion (nn.Module): Loss function.
         device (torch.device): Device to validate on.
         collect_metrics (bool): If True, collect labels and predictions.
-
+    
     Returns:
-        tuple: (epoch_loss, epoch_accuracy, all_labels, all_preds) if collect_metrics=True
+        tuple: (epoch_loss, epoch_accuracy, all_labels, all_preds)
     """
     model.eval()
     running_loss = 0.0
@@ -1091,8 +823,10 @@ def validate(model, dataloader, criterion, device, collect_metrics=False):
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
+            # Mixed precision inference
+            with autocast():
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
 
             running_loss += loss.item() * inputs.size(0)
             _, preds = torch.max(outputs, 1)
@@ -1106,10 +840,176 @@ def validate(model, dataloader, criterion, device, collect_metrics=False):
     epoch_loss = running_loss / total_samples
     epoch_acc = correct_predictions.double() / total_samples
 
-    return (epoch_loss, epoch_acc.item(), all_labels, all_preds) if collect_metrics else (epoch_loss, epoch_acc.item())
+    wandb.log({
+        f"{model_name}/epoch_val_loss": epoch_loss,
+        f"{model_name}/epoch_val_accuracy": epoch_acc.item()
+    })
+
+    return epoch_loss, epoch_acc.item(), all_labels, all_preds
 
 # ================================================================
-# Training Loop
+# Visualization Utilities
+# ================================================================
+
+def plot_training_metrics(train_losses, train_accuracies, val_losses, val_accuracies, model_name, save_path=None):
+    """
+    Plot training and validation loss and accuracy over epochs.
+
+    Args:
+        train_losses (list): List of training losses.
+        train_accuracies (list): List of training accuracies.
+        val_losses (list): List of validation losses.
+        val_accuracies (list): List of validation accuracies.
+        model_name (str): Name of the model for the plot title.
+        save_path (str, optional): Path to save the plot. If None, the plot is shown.
+    """
+    epochs_range = range(1, len(train_losses) + 1)
+
+    plt.figure(figsize=(12, 5))
+
+    # Plot Loss
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs_range, train_losses, 'bo-', label='Training Loss')
+    plt.plot(epochs_range, val_losses, 'ro-', label='Validation Loss')
+    plt.title(f'{model_name} - Training and Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    # Plot Accuracy
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs_range, train_accuracies, 'bo-', label='Training Accuracy')
+    plt.plot(epochs_range, val_accuracies, 'ro-', label='Validation Accuracy')
+    plt.title(f'{model_name} - Training and Validation Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path)
+        wandb.log({f"{model_name}/training_validation_metrics": wandb.Image(save_path)})
+        print(f"Training metrics plot saved at {save_path}")
+    else:
+        plt.show()
+    plt.close()
+
+def evaluate_model_post_training(model, dataloader, device, idx_to_disease, model_name, save_dir):
+    """
+    Evaluate the model on a dataset and print classification metrics.
+
+    Args:
+        model (nn.Module): Trained model.
+        dataloader (DataLoader): DataLoader for the evaluation dataset.
+        device (torch.device): Device to run the model on.
+        idx_to_disease (dict): Mapping from index to disease name.
+        model_name (str): Name of the model for reporting.
+        save_dir (str): Directory to save the confusion matrix plot.
+
+    Returns:
+        None
+    """
+    model.eval()
+    all_labels = []
+    all_preds = []
+    running_loss = 0.0
+    total_samples = 0
+
+    # Define loss function (same as training)
+    criterion = nn.CrossEntropyLoss()
+
+    with torch.no_grad():
+        for inputs, labels in tqdm(dataloader, desc=f"{model_name} - Evaluation", leave=False):
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+
+            # Mixed precision inference
+            with autocast():
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+
+            running_loss += loss.item() * inputs.size(0)
+            _, preds = torch.max(outputs, 1)
+
+            all_labels.extend(labels.cpu().numpy())
+            all_preds.extend(preds.cpu().numpy())
+            total_samples += inputs.size(0)
+
+    avg_loss = running_loss / total_samples
+    print(f"\n{model_name} - Evaluation Loss: {avg_loss:.4f}")
+
+    # Classification Report
+    report = classification_report(all_labels, all_preds, target_names=list(idx_to_disease.values()))
+    print(f"\n{model_name} - Classification Report:")
+    print(report)
+
+    wandb.log({f"{model_name}/classification_report": report})
+
+    # Confusion Matrix
+    cm = confusion_matrix(all_labels, all_preds)
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=list(idx_to_disease.values()), 
+                yticklabels=list(idx_to_disease.values()))
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title(f'{model_name} - Confusion Matrix')
+    plt.tight_layout()
+    # Save the plot
+    cm_save_path = os.path.join(save_dir, f"{model_name}_confusion_matrix.png")
+    plt.savefig(cm_save_path)
+    wandb.log({f"{model_name}/confusion_matrix": wandb.Image(cm_save_path)})
+    plt.close()
+    print(f"Confusion matrix saved at {cm_save_path}")
+
+# ================================================================
+# Initialize W&B
+# ================================================================
+
+# Initialize W&B run
+wandb.init(
+    project=WANDB_PROJECT_NAME,
+    name="ViT_Training",
+    config={
+        "batch_size": BATCH_SIZE,
+        "learning_rate": LEARNING_RATE,
+        "epochs": NUM_EPOCHS,
+        "model": "VisionTransformer",
+        "optimizer": "AdamW",
+        "scheduler": "StepLR",
+        "num_classes": output_size,
+        "image_size": f"{HEIGHT}x{WIDTH}",
+    },
+    save_code=True
+)
+
+# Get the run id for tracking
+run_id = wandb.run.id
+print(f"W&B Run ID: {run_id}")
+
+# ================================================================
+# Callbacks for Training Monitoring
+# ================================================================
+
+# Initialize EarlyStopping and ModelCheckpoint
+early_stopping = EarlyStopping(
+    patience=EARLY_STOPPING_PATIENCE, 
+    verbose=True, 
+    path=os.path.join(output_dirs[2], "best_val_loss_model.pth")
+)
+model_checkpoint = ModelCheckpoint(
+    path=os.path.join(output_dirs[2], "best_val_loss_model.pth"), 
+    verbose=True
+)
+
+# ================================================================
+# Initialize GradScaler for Mixed Precision
+# ================================================================
+scaler = GradScaler()
+
+# ================================================================
+# Training Loop with Callbacks and Mixed Precision
 # ================================================================
 
 import time
@@ -1120,25 +1020,34 @@ train_accuracies = []
 val_losses = []
 val_accuracies = []
 
-# Early Stopping variables
-best_val_acc = 0.0
-trigger_times = 0
-
 # Time tracking
 total_start_time = time.time()
 
 for epoch in range(NUM_EPOCHS):
     print(f"\nEpoch {epoch+1}/{NUM_EPOCHS}")
-    print("-" * 10)
+    print("-" * 30)
     
     epoch_start_time = time.time()
     
     # Training Phase
-    train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
+    train_loss, train_acc = train_one_epoch(
+        model=vit_model,
+        dataloader=train_loader,
+        criterion=criterion,
+        optimizer=optimizer,
+        device=device,
+        scaler=scaler,
+        epoch=epoch
+    )
     print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc*100:.2f}%")
     
     # Validation Phase
-    val_loss, val_acc = validate(model, valid_loader, criterion, device)
+    val_loss, val_acc, _, _ = validate(
+        model=vit_model,
+        dataloader=valid_loader,
+        criterion=criterion,
+        device=device
+    )
     print(f"Valid Loss: {val_loss:.4f} | Valid Acc: {val_acc*100:.2f}%")
     
     epoch_end_time = time.time()
@@ -1154,149 +1063,50 @@ for epoch in range(NUM_EPOCHS):
     # Learning rate scheduler step
     scheduler.step()
     
-    # Check for improvement
-    if val_acc > best_val_acc:
-        best_val_acc = val_acc
-        best_model_path = os.path.join(project_root, "models", "best_vit_single_task_disease.pth")
-        torch.save(model.state_dict(), best_model_path)
-        print(f"Best model saved at {best_model_path}!")
-        trigger_times = 0
-    else:
-        trigger_times += 1
-        print(f"No improvement in validation accuracy. Trigger times: {trigger_times}")
-        if trigger_times >= EARLY_STOPPING_PATIENCE:
-            print("Early stopping triggered!")
-            break
+    # Log learning rate
+    current_lr = scheduler.get_last_lr()[0]
+    wandb.log({f"{vit_model.__class__.__name__}/learning_rate": current_lr})
+    
+    # Model checkpoint based on validation loss
+    model_checkpoint(val_loss, vit_model)
+    
+    # Early Stopping based on validation loss
+    early_stopping(val_loss, vit_model)
+    if early_stopping.early_stop:
+        print("Early stopping triggered!")
+        break
 
 total_end_time = time.time()
 total_duration = total_end_time - total_start_time
 print(f"\nTotal Training Time: {total_duration/60:.2f} minutes")
 
-# ================================================================
-# Visualization Utilities
-# ================================================================
-
-def plot_training_metrics(train_losses, train_accuracies, val_losses, val_accuracies, save_path=None):
-    """
-    Plot training and validation loss and accuracy over epochs.
-
-    Args:
-        train_losses (list): List of training losses.
-        train_accuracies (list): List of training accuracies.
-        val_losses (list): List of validation losses.
-        val_accuracies (list): List of validation accuracies.
-        save_path (str, optional): Path to save the plot. If None, the plot is shown.
-    """
-    epochs_range = range(1, len(train_losses) + 1)
-
-    plt.figure(figsize=(12, 5))
-
-    # Plot Loss
-    plt.subplot(1, 2, 1)
-    plt.plot(epochs_range, train_losses, 'bo-', label='Training Loss')
-    plt.plot(epochs_range, val_losses, 'ro-', label='Validation Loss')
-    plt.title('Training and Validation Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-
-    # Plot Accuracy
-    plt.subplot(1, 2, 2)
-    plt.plot(epochs_range, train_accuracies, 'bo-', label='Training Accuracy')
-    plt.plot(epochs_range, val_accuracies, 'ro-', label='Validation Accuracy')
-    plt.title('Training and Validation Accuracy')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.legend()
-
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path)
-        print(f"Training metrics plot saved at {save_path}")
-    else:
-        plt.show()
-
-def evaluate_model_post_training(model, dataloader, device, idx_to_disease, output_dirs=None):
-    """
-    Evaluate the model on a dataset and print classification metrics.
-
-    Args:
-        model (nn.Module): Trained model.
-        dataloader (DataLoader): DataLoader for the evaluation dataset.
-        device (torch.device): Device to run the model on.
-        idx_to_disease (dict): Mapping from index to disease name.
-        output_dirs (list): List of output directories for saving plots.
-
-    Returns:
-        None
-    """
-    model.eval()
-    all_labels = []
-    all_preds = []
-    running_loss = 0.0
-    total_samples = 0
-
-    # Define loss function (same as training)
-    criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
-
-    with torch.no_grad():
-        for inputs, labels in tqdm(dataloader, desc="Post-Training Evaluation", leave=False):
-            inputs = inputs.to(device)
-            labels = labels.to(device)
-
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-
-            running_loss += loss.item() * inputs.size(0)
-            _, preds = torch.max(outputs, 1)
-
-            all_labels.extend(labels.cpu().numpy())
-            all_preds.extend(preds.cpu().numpy())
-            total_samples += inputs.size(0)
-
-    avg_loss = running_loss / total_samples
-    print(f"\nPost-Training Evaluation Loss: {avg_loss:.4f}")
-
-    # Classification Report
-    print("\nClassification Report:")
-    print(classification_report(all_labels, all_preds, target_names=list(disease_to_idx.keys())))
-
-    # Confusion Matrix
-    cm = confusion_matrix(all_labels, all_preds)
-    plt.figure(figsize=(12, 10))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=list(disease_to_idx.keys()), yticklabels=list(disease_to_idx.keys()))
-    plt.xlabel('Predicted')
-    plt.ylabel('True')
-    plt.title('Confusion Matrix')
-    plt.tight_layout()
-    if output_dirs:
-        plt.savefig(os.path.join(output_dirs[1], "post_training_confusion_matrix.pdf"))
-    plt.show()
+# Log total training time to W&B
+wandb.log({"total_training_time_minutes": total_duration/60})
 
 # ================================================================
-# Plotting Training and Validation Metrics
+# Visualization and Saving Artifacts
 # ================================================================
 
-# After training loop
+# Plot training metrics
+plot_save_path = os.path.join(output_dirs[1], "ViT_training_validation_metrics.png")
 plot_training_metrics(
     train_losses, 
     train_accuracies, 
     val_losses, 
     val_accuracies, 
-    save_path=os.path.join(output_dirs[1], "training_validation_metrics.png")
+    model_name="ViT",
+    save_path=plot_save_path
 )
 
-# ================================================================
-# Post-Training Evaluation: Classification Report and Confusion Matrix
-# ================================================================
-
 # Perform post-training evaluation on the validation set
-evaluate_model_post_training(model, valid_loader, device, idx_to_disease, output_dirs)
+evaluate_model_post_training(
+    model=vit_model, 
+    dataloader=valid_loader, 
+    device=device, 
+    idx_to_disease=idx_to_disease, 
+    model_name="ViT", 
+    save_dir=output_dirs[1]
+)
 
-# Optionally, evaluate on the test set if available
-if test_loader:
-    print("\nEvaluating on Test Set:")
-    evaluate_model_post_training(model, test_loader, device, idx_to_disease, output_dirs)
-else:
-    print("\nNo test set available for evaluation.")
+# Save W&B artifacts
+wandb.finish()
