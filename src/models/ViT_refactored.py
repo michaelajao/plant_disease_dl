@@ -661,6 +661,8 @@ optimizer = optim.AdamW(vit_model.parameters(), lr=LEARNING_RATE, weight_decay=1
 # Define a learning rate scheduler
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
+model_name = "ViT"
+
 # ================================================================
 # Callbacks for Training Monitoring
 # ================================================================
