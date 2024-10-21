@@ -8,6 +8,7 @@ import sys
 import json
 import random
 import logging
+import time
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -41,7 +42,7 @@ import timm
 # ================================================================
 # Assuming helper_functions.py exists and contains set_seeds
 # Adjust the path as necessary
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 from helper_functions import set_seeds  # Adjust import based on your project structure
 
 # ================================================================
@@ -87,7 +88,7 @@ print(f"Using device: {device}")
 # ================================================================
 
 # Define project root (assuming this script is in the project root)
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 
 # Define directories for data and models
 data_path = os.path.join(

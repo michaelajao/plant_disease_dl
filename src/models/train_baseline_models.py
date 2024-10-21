@@ -8,11 +8,14 @@ import sys
 import json
 import random
 import logging
+import time
+import logging
 import numpy as np
 import pandas as pd
 from PIL import Image
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.metrics import classification_report, confusion_matrix
 
 import torch
 import torch.nn as nn
@@ -41,8 +44,9 @@ import timm
 # ================================================================
 # Assuming helper_functions.py exists and contains set_seeds
 # Adjust the path as necessary
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 from helper_functions import set_seeds  # Adjust import based on your project structure
+from helper_functions import *
 
 # ================================================================
 # Setup Logging
@@ -62,7 +66,7 @@ logging.basicConfig(
 set_seeds(42)
 
 # Hyperparameters
-BATCH_SIZE = 64          # Adjust based on GPU memory
+BATCH_SIZE = 32          # Adjust based on GPU memory
 LEARNING_RATE = 1e-3     # Adjust as necessary
 NUM_EPOCHS = 50          # Adjust based on experimentation
 HEIGHT, WIDTH = 224, 224 # Image dimensions
@@ -87,7 +91,7 @@ print(f"Using device: {device}")
 # ================================================================
 
 # Define project root (assuming this script is in the project root)
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 
 # Define directories for data and models
 data_path = os.path.join(
@@ -621,13 +625,72 @@ efficientnetv2_scheduler = optim.lr_scheduler.StepLR(
 # Callbacks for Training Monitoring
 # ================================================================
 
-# EarlyStopping and ModelCheckpoint will be handled within the training loop for each model
+class EarlyStopping:
+    """
+    Early stops the training if validation loss doesn't improve after a given patience.
+    """
+    def __init__(self, patience=10, verbose=False, delta=0.0, path='best_model.pth'):
+        """
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+            verbose (bool): If True, prints a message for each validation loss improvement.
+            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
+            path (str): Path for the checkpoint to be saved to.
+        """
+        self.patience = patience
+        self.verbose = verbose
+        self.delta = delta
+        self.path = path
+
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+
+    def __call__(self, val_loss, model):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+            self.save_checkpoint(val_loss, model)
+        elif val_loss > self.best_loss - self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        '''Saves model when validation loss decrease.'''
+        if self.verbose:
+            print(f'Validation loss decreased ({self.best_loss:.6f} --> {val_loss:.6f}).  Saving model ...')
+        torch.save(model.state_dict(), self.path)
+
+class ModelCheckpoint:
+    """
+    Saves the model based on validation loss.
+    """
+    def __init__(self, path='best_val_loss_model.pth', verbose=False):
+        """
+        Args:
+            path (str): Path to save the model.
+            verbose (bool): If True, prints messages when saving the model.
+        """
+        self.best_loss = None
+        self.path = path
+        self.verbose = verbose
+
+    def __call__(self, val_loss, model):
+        if self.best_loss is None or val_loss < self.best_loss:
+            if self.verbose:
+                print(f"Validation loss improved ({self.best_loss if self.best_loss else 'N/A'} --> {val_loss:.6f}). Saving model...")
+            self.best_loss = val_loss
+            torch.save(model.state_dict(), self.path)
 
 # ================================================================
 # Training and Validation Functions
 # ================================================================
-
-from sklearn.metrics import classification_report, confusion_matrix
 
 def train_one_epoch(model, dataloader, loss_fn, optimizer, device, scaler, epoch, model_name, log_interval=10):
     """
@@ -675,7 +738,8 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device, scaler, epoch
         # Enhanced Logging: Log every 'log_interval' batches
         if (batch_idx + 1) % log_interval == 0:
             unique, counts = np.unique(labels.cpu().numpy(), return_counts=True)
-            class_distribution = dict(zip(unique, counts))
+            # Convert keys to strings to avoid TypeError
+            class_distribution = {str(int(k)): int(v) for k, v in zip(unique, counts)}
             wandb.log({
                 f"{model_name}/train_loss": loss.item(),
                 f"{model_name}/batch_train_accuracy": torch.sum(preds == labels.data).item() / inputs.size(0),

@@ -242,7 +242,7 @@ plt.rcParams.update(
     {
         "font.family": "serif",
         "font.size": 16,
-        "figure.figsize": [12, 8],
+        "figure.figsize": [10, 8],
         "text.usetex": False,
         "figure.facecolor": "white",
         "figure.autolayout": True,
