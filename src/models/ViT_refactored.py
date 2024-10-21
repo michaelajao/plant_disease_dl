@@ -34,16 +34,13 @@ from torch.cuda.amp import autocast, GradScaler
 # For Weights & Biases integration
 import wandb
 
-# For model definitions
-import timm
-
 # ================================================================
 # Helper Functions and Settings
 # ================================================================
-# Assuming helper_functions.py exists and contains set_seeds
-# Adjust the path as necessary
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-from helper_functions import set_seeds  # Adjust import based on your project structure
+from helper_functions import set_seeds
+from helper_functions import *
 
 # ================================================================
 # Setup Logging
@@ -63,8 +60,8 @@ logging.basicConfig(
 set_seeds(42)
 
 # Hyperparameters
-BATCH_SIZE = 64          # Adjust based on GPU memory
-LEARNING_RATE = 1e-4     # Lower learning rate for training from scratch
+BATCH_SIZE = 32          # Adjust based on GPU memory
+LEARNING_RATE = 1e-3     # Lower learning rate for training from scratch
 NUM_EPOCHS = 50          # Increased epochs for better training
 HEIGHT, WIDTH = 224, 224 # Image dimensions
 
@@ -661,8 +658,6 @@ optimizer = optim.AdamW(vit_model.parameters(), lr=LEARNING_RATE, weight_decay=1
 
 # Define a learning rate scheduler
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
-
-model_name = "ViT"
 
 # ================================================================
 # Callbacks for Training Monitoring
