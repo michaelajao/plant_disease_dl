@@ -73,6 +73,7 @@ EARLY_STOPPING_PATIENCE = 10  # Increased patience for early stopping
 
 # W&B Project Name
 WANDB_PROJECT_NAME = "Plant_Leaf_Disease_ViT"
+model_name = "ViT"  # Define model name globally
 
 # ================================================================
 # Device Configuration
@@ -781,7 +782,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler, epo
         # Enhanced Logging: Log every 'log_interval' batches
         if (batch_idx + 1) % log_interval == 0:
             unique, counts = np.unique(labels.cpu().numpy(), return_counts=True)
-            class_distribution = dict(zip(unique, counts))
+            class_distribution = {str(int(k)): int(v) for k, v in zip(unique, counts)}
             wandb.log({
                 f"{model_name}/train_loss": loss.item(),
                 f"{model_name}/batch_train_accuracy": torch.sum(preds == labels.data).item() / inputs.size(0),
