@@ -1,0 +1,141 @@
+{
+    "Apple_scab": {
+        "precision": 0.75,
+        "recall": 0.07142857142857142,
+        "f1-score": 0.13043478260869565,
+        "support": 126
+    },
+    "Bacterial_spot": {
+        "precision": 0.7152156224572823,
+        "recall": 0.8093922651933702,
+        "f1-score": 0.7593952483801295,
+        "support": 1086
+    },
+    "Black_rot": {
+        "precision": 0.5876865671641791,
+        "recall": 0.8725761772853186,
+        "f1-score": 0.7023411371237457,
+        "support": 361
+    },
+    "Cedar_apple_rust": {
+        "precision": 0.5714285714285714,
+        "recall": 0.07272727272727272,
+        "f1-score": 0.1290322580645161,
+        "support": 55
+    },
+    "Cercospora_leaf_spot Gray_leaf_spot": {
+        "precision": 0.5190839694656488,
+        "recall": 0.6601941747572816,
+        "f1-score": 0.5811965811965811,
+        "support": 103
+    },
+    "Common_rust": {
+        "precision": 0.9539748953974896,
+        "recall": 0.9539748953974896,
+        "f1-score": 0.9539748953974896,
+        "support": 239
+    },
+    "Early_blight": {
+        "precision": 0.5608365019011406,
+        "recall": 0.7375,
+        "f1-score": 0.6371490280777538,
+        "support": 400
+    },
+    "Esca_(Black_Measles)": {
+        "precision": 0.902027027027027,
+        "recall": 0.9638989169675091,
+        "f1-score": 0.931937172774869,
+        "support": 277
+    },
+    "Haunglongbing_(Citrus_greening)": {
+        "precision": 0.9675967596759676,
+        "recall": 0.9754990925589837,
+        "f1-score": 0.9715318572074109,
+        "support": 1102
+    },
+    "Late_blight": {
+        "precision": 0.6065573770491803,
+        "recall": 0.7628865979381443,
+        "f1-score": 0.6757990867579908,
+        "support": 582
+    },
+    "Leaf_Mold": {
+        "precision": 0.9230769230769231,
+        "recall": 0.06282722513089005,
+        "f1-score": 0.11764705882352941,
+        "support": 191
+    },
+    "Leaf_blight_(Isariopsis_Leaf_Spot)": {
+        "precision": 0.8666666666666667,
+        "recall": 0.06018518518518518,
+        "f1-score": 0.11255411255411255,
+        "support": 216
+    },
+    "Leaf_scorch": {
+        "precision": 0.9428571428571428,
+        "recall": 0.14864864864864866,
+        "f1-score": 0.25680933852140075,
+        "support": 222
+    },
+    "Northern_Leaf_Blight": {
+        "precision": 0.7454545454545455,
+        "recall": 0.41624365482233505,
+        "f1-score": 0.5342019543973942,
+        "support": 197
+    },
+    "Powdery_mildew": {
+        "precision": 0.8154311649016641,
+        "recall": 0.9325259515570934,
+        "f1-score": 0.8700564971751412,
+        "support": 578
+    },
+    "Septoria_leaf_spot": {
+        "precision": 0.5027027027027027,
+        "recall": 0.7859154929577464,
+        "f1-score": 0.6131868131868131,
+        "support": 355
+    },
+    "Spider_mites Two-spotted_spider_mite": {
+        "precision": 0.7231503579952268,
+        "recall": 0.9017857142857143,
+        "f1-score": 0.8026490066225166,
+        "support": 336
+    },
+    "Target_Spot": {
+        "precision": 0.6593406593406593,
+        "recall": 0.8540925266903915,
+        "f1-score": 0.7441860465116279,
+        "support": 281
+    },
+    "Tomato_Yellow_Leaf_Curl_Virus": {
+        "precision": 0.9553656220322887,
+        "recall": 0.9384328358208955,
+        "f1-score": 0.9468235294117648,
+        "support": 1072
+    },
+    "Tomato_mosaic_virus": {
+        "precision": 0.7272727272727273,
+        "recall": 0.10666666666666667,
+        "f1-score": 0.186046511627907,
+        "support": 75
+    },
+    "healthy": {
+        "precision": 0.9411556185749734,
+        "recall": 0.8785572468563865,
+        "f1-score": 0.9087797364367619,
+        "support": 3022
+    },
+    "accuracy": 0.8048915042294962,
+    "macro avg": {
+        "precision": 0.7588991153543813,
+        "recall": 0.6174266244226617,
+        "f1-score": 0.5983682215646738,
+        "support": 10876
+    },
+    "weighted avg": {
+        "precision": 0.8284622535287601,
+        "recall": 0.8048915042294962,
+        "f1-score": 0.7861608410817713,
+        "support": 10876
+    }
+}

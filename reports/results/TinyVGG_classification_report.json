@@ -1,0 +1,141 @@
+{
+    "Apple_scab": {
+        "precision": 0.8529411764705882,
+        "recall": 0.23015873015873015,
+        "f1-score": 0.3625,
+        "support": 126
+    },
+    "Bacterial_spot": {
+        "precision": 0.8902127659574468,
+        "recall": 0.9631675874769797,
+        "f1-score": 0.9252543122512162,
+        "support": 1086
+    },
+    "Black_rot": {
+        "precision": 0.7111111111111111,
+        "recall": 0.9750692520775623,
+        "f1-score": 0.822429906542056,
+        "support": 361
+    },
+    "Cedar_apple_rust": {
+        "precision": 1.0,
+        "recall": 0.4727272727272727,
+        "f1-score": 0.6419753086419753,
+        "support": 55
+    },
+    "Cercospora_leaf_spot Gray_leaf_spot": {
+        "precision": 0.7870370370370371,
+        "recall": 0.8252427184466019,
+        "f1-score": 0.8056872037914692,
+        "support": 103
+    },
+    "Common_rust": {
+        "precision": 0.983402489626556,
+        "recall": 0.9916317991631799,
+        "f1-score": 0.9874999999999999,
+        "support": 239
+    },
+    "Early_blight": {
+        "precision": 0.8555045871559633,
+        "recall": 0.9325,
+        "f1-score": 0.8923444976076554,
+        "support": 400
+    },
+    "Esca_(Black_Measles)": {
+        "precision": 0.9820143884892086,
+        "recall": 0.9855595667870036,
+        "f1-score": 0.9837837837837838,
+        "support": 277
+    },
+    "Haunglongbing_(Citrus_greening)": {
+        "precision": 0.9891794409377818,
+        "recall": 0.9954627949183303,
+        "f1-score": 0.9923111714156491,
+        "support": 1102
+    },
+    "Late_blight": {
+        "precision": 0.8607594936708861,
+        "recall": 0.9347079037800687,
+        "f1-score": 0.8962108731466228,
+        "support": 582
+    },
+    "Leaf_Mold": {
+        "precision": 0.9583333333333334,
+        "recall": 0.12041884816753927,
+        "f1-score": 0.21395348837209302,
+        "support": 191
+    },
+    "Leaf_blight_(Isariopsis_Leaf_Spot)": {
+        "precision": 0.9914529914529915,
+        "recall": 0.5370370370370371,
+        "f1-score": 0.6966966966966966,
+        "support": 216
+    },
+    "Leaf_scorch": {
+        "precision": 0.984251968503937,
+        "recall": 0.5630630630630631,
+        "f1-score": 0.7163323782234957,
+        "support": 222
+    },
+    "Northern_Leaf_Blight": {
+        "precision": 0.8978494623655914,
+        "recall": 0.8477157360406091,
+        "f1-score": 0.8720626631853786,
+        "support": 197
+    },
+    "Powdery_mildew": {
+        "precision": 0.945,
+        "recall": 0.9809688581314879,
+        "f1-score": 0.9626485568760611,
+        "support": 578
+    },
+    "Septoria_leaf_spot": {
+        "precision": 0.7857142857142857,
+        "recall": 0.9605633802816902,
+        "f1-score": 0.864385297845374,
+        "support": 355
+    },
+    "Spider_mites Two-spotted_spider_mite": {
+        "precision": 0.827930174563591,
+        "recall": 0.9880952380952381,
+        "f1-score": 0.9009497964721845,
+        "support": 336
+    },
+    "Target_Spot": {
+        "precision": 0.9270833333333334,
+        "recall": 0.9501779359430605,
+        "f1-score": 0.9384885764499122,
+        "support": 281
+    },
+    "Tomato_Yellow_Leaf_Curl_Virus": {
+        "precision": 0.9796484736355227,
+        "recall": 0.9878731343283582,
+        "f1-score": 0.983743613562471,
+        "support": 1072
+    },
+    "Tomato_mosaic_virus": {
+        "precision": 0.8888888888888888,
+        "recall": 0.32,
+        "f1-score": 0.47058823529411764,
+        "support": 75
+    },
+    "healthy": {
+        "precision": 0.9757932613673536,
+        "recall": 0.9870946393117142,
+        "f1-score": 0.9814114163513736,
+        "support": 3022
+    },
+    "accuracy": 0.9255240897388746,
+    "macro avg": {
+        "precision": 0.9082908887435908,
+        "recall": 0.788058833139787,
+        "f1-score": 0.8052979893575993,
+        "support": 10876
+    },
+    "weighted avg": {
+        "precision": 0.93135479492779,
+        "recall": 0.9255240897388746,
+        "f1-score": 0.9152115874163298,
+        "support": 10876
+    }
+}
