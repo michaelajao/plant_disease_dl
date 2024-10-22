@@ -90,6 +90,12 @@ target/
 new-plant-diseases-dataset.zip
 plant-village-dataset-updated.zip
 src/models/*.pth
-models/*.pth
+models/*/*.pth
 models/*.pt
 Plant_leaf_diseases_dataset_without_augmentation.zip
+models/ViT/*.pth
+models/*.pth
+models/baseline_models/*.pth
+models/baseline_models/EfficientNetV2_early_stop_model.pth
+models/baseline_models/EfficientNetV2_best_val_loss_model.pth
+

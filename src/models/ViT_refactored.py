@@ -6,33 +6,26 @@
 import os
 import sys
 import json
-import random
 import logging
 import time
 import numpy as np
 import pandas as pd
 from PIL import Image
-import matplotlib.pyplot as plt
-import seaborn as sns
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
-
-# tqdm for progress bars
+import matplotlib.pyplot as plt
+import seaborn as sns
 from tqdm.auto import tqdm
+from torch.cuda.amp import autocast, GradScaler
+import wandb
+from sklearn.metrics import classification_report, confusion_matrix
 
 # Suppress warnings for cleaner output
 import warnings
 warnings.filterwarnings("ignore")
-
-# For mixed precision training
-from torch.cuda.amp import autocast, GradScaler
-
-# For Weights & Biases integration
-import wandb
 
 # ================================================================
 # Helper Functions and Settings
@@ -43,16 +36,6 @@ from helper_functions import set_seeds
 from helper_functions import *
 
 # ================================================================
-# Setup Logging
-# ================================================================
-logging.basicConfig(
-    filename='vit_training_errors.log',
-    filemode='a',
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.ERROR
-)
-
-# ================================================================
 # Configuration and Settings
 # ================================================================
 
@@ -61,7 +44,7 @@ set_seeds(42)
 
 # Hyperparameters
 BATCH_SIZE = 32          # Adjust based on GPU memory
-LEARNING_RATE = 1e-3     # Lower learning rate for training from scratch
+LEARNING_RATE = 1e-4     # Lower learning rate for training from scratch
 NUM_EPOCHS = 50          # Increased epochs for better training
 HEIGHT, WIDTH = 224, 224 # Image dimensions
 
@@ -99,24 +82,32 @@ data_path = os.path.join(
 train_dir = os.path.join(data_path, "train")
 valid_dir = os.path.join(data_path, "valid")
 
-# Define output directories for results, figures, and models
-output_dirs = [
-    os.path.join(project_root, "reports", "results"),
-    os.path.join(project_root, "reports", "figures"),
-    os.path.join(project_root, "models", "ViT"),
-]
+# Define output directories for results, figures, models, and logs
+output_dirs = {
+    "results": os.path.join(project_root, "reports", "results"),
+    "figures": os.path.join(project_root, "reports", "figures"),
+    "models": os.path.join(project_root, "models", "ViT"),
+    "logs": os.path.join(project_root, "logs"),
+}
 
 # Create output directories if they don't exist
-for directory in output_dirs:
+for directory in output_dirs.values():
     os.makedirs(directory, exist_ok=True)
+
+# Setup Logging
+log_file = os.path.join(output_dirs["logs"], 'vit_training.log')
+logging.basicConfig(
+    filename=log_file,
+    filemode='a',
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
 # Function to list directory contents
 def list_directory_contents(directory, num_items=10):
     if os.path.exists(directory):
         contents = os.listdir(directory)
-        print(
-            f"Contents of {directory} ({len(contents)} items): {contents[:num_items]}..."
-        )
+        print(f"Contents of {directory} ({len(contents)} items): {contents[:num_items]}...")
     else:
         print(f"Directory does not exist: {directory}")
 
@@ -269,10 +260,10 @@ transform_major = transforms.Compose([
     transforms.RandomHorizontalFlip(),
     transforms.RandomRotation(15),
     transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],   # Mean for ImageNet
-        std=[0.229, 0.224, 0.225]     # Std for ImageNet
-    ),
+    # transforms.Normalize(
+    #     mean=[0.485, 0.456, 0.406],   # Mean for ImageNet
+    #     std=[0.229, 0.224, 0.225]     # Std for ImageNet
+    # ),
 ])
 
 # Define transforms for minority classes with additional augmentations
@@ -284,10 +275,10 @@ transform_minority = transforms.Compose([
     transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.2),  # Color jitter
     transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
     transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],   # Mean for ImageNet
-        std=[0.229, 0.224, 0.225]     # Std for ImageNet
-    ),
+    # transforms.Normalize(
+    #     mean=[0.485, 0.456, 0.406],   # Mean for ImageNet
+    #     std=[0.229, 0.224, 0.225]     # Std for ImageNet
+    # ),
 ])
 
 # ================================================================
@@ -367,6 +358,7 @@ if len(train_dataset) > 0:
     print(f"Sample Label Name: {idx_to_disease.get(sample_label, 'Unknown')}")
 else:
     print("\nTraining dataset is empty. Please check your dataset and label mappings.")
+
 
 # ================================================================
 # Vision Transformer (ViT) Architecture
@@ -730,8 +722,6 @@ class ModelCheckpoint:
 # Training and Validation Functions
 # ================================================================
 
-from sklearn.metrics import classification_report, confusion_matrix
-
 def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler, epoch, log_interval=10):
     """
     Trains the model for one epoch using mixed precision.
@@ -939,15 +929,22 @@ def evaluate_model_post_training(model, dataloader, device, idx_to_disease, mode
     print(f"\n{model_name} - Evaluation Loss: {avg_loss:.4f}")
 
     # Classification Report
+    report_dict = classification_report(all_labels, all_preds, target_names=list(idx_to_disease.values()), output_dict=True)
     report = classification_report(all_labels, all_preds, target_names=list(idx_to_disease.values()))
     print(f"\n{model_name} - Classification Report:")
     print(report)
 
-    wandb.log({f"{model_name}/classification_report": report})
+    # Save classification report as JSON
+    report_save_path = os.path.join(output_dirs["results"], f"{model_name}_classification_report.json")
+    with open(report_save_path, 'w') as f:
+        json.dump(report_dict, f, indent=4)
+    print(f"Classification report saved at {report_save_path}")
+
+    wandb.log({f"{model_name}/classification_report": wandb.Table(dataframe=pd.DataFrame(report_dict).transpose())})
 
     # Confusion Matrix
     cm = confusion_matrix(all_labels, all_preds)
-    plt.figure(figsize=(12, 10))
+    plt.figure(figsize=(15, 12))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
                 xticklabels=list(idx_to_disease.values()), 
                 yticklabels=list(idx_to_disease.values()))
@@ -961,6 +958,11 @@ def evaluate_model_post_training(model, dataloader, device, idx_to_disease, mode
     wandb.log({f"{model_name}/confusion_matrix": wandb.Image(cm_save_path)})
     plt.close()
     print(f"Confusion matrix saved at {cm_save_path}")
+
+    # Save confusion matrix data
+    cm_data_save_path = os.path.join(output_dirs["results"], f"{model_name}_confusion_matrix.npy")
+    np.save(cm_data_save_path, cm)
+    print(f"Confusion matrix data saved at {cm_data_save_path}")
 
 # ================================================================
 # Initialize W&B
@@ -1010,8 +1012,6 @@ scaler = GradScaler()
 # ================================================================
 # Training Loop with Callbacks and Mixed Precision
 # ================================================================
-
-import time
 
 # Initialize lists to store metrics
 train_losses = []
@@ -1083,17 +1083,33 @@ print(f"\nTotal Training Time: {total_duration/60:.2f} minutes")
 wandb.log({"total_training_time_minutes": total_duration/60})
 
 # ================================================================
+# Save Metrics to Results Folder
+# ================================================================
+
+# Save metrics to CSV files
+metrics_df = pd.DataFrame({
+    'epoch': range(1, len(train_losses)+1),
+    'train_loss': train_losses,
+    'train_accuracy': train_accuracies,
+    'val_loss': val_losses,
+    'val_accuracy': val_accuracies
+})
+metrics_save_path = os.path.join(output_dirs["results"], f'{model_name}_training_metrics.csv')
+metrics_df.to_csv(metrics_save_path, index=False)
+print(f"Training metrics saved at {metrics_save_path}")
+
+# ================================================================
 # Visualization and Saving Artifacts
 # ================================================================
 
 # Plot training metrics
-plot_save_path = os.path.join(output_dirs[1], "ViT_training_validation_metrics.png")
+plot_save_path = os.path.join(output_dirs["figures"], f"{model_name}_training_validation_metrics.png")
 plot_training_metrics(
     train_losses, 
     train_accuracies, 
     val_losses, 
     val_accuracies, 
-    model_name="ViT",
+    model_name=model_name,
     save_path=plot_save_path
 )
 
@@ -1103,8 +1119,8 @@ evaluate_model_post_training(
     dataloader=valid_loader, 
     device=device, 
     idx_to_disease=idx_to_disease, 
-    model_name="ViT", 
-    save_dir=output_dirs[1]
+    model_name=model_name, 
+    save_dir=output_dirs["figures"]
 )
 
 # Save W&B artifacts

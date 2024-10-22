@@ -48,15 +48,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from helper_functions import set_seeds  # Adjust import based on your project structure
 from helper_functions import *
 
-# ================================================================
-# Setup Logging
-# ================================================================
-logging.basicConfig(
-    filename='baseline_training_errors.log',
-    filemode='a',
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.ERROR
-)
 
 # ================================================================
 # Configuration and Settings
@@ -104,16 +95,26 @@ data_path = os.path.join(
 train_dir = os.path.join(data_path, "train")
 valid_dir = os.path.join(data_path, "valid")
 
-# Define output directories for results, figures, and models
-output_dirs = [
-    os.path.join(project_root, "reports", "results"),
-    os.path.join(project_root, "reports", "figures"),
-    os.path.join(project_root, "models", "baseline_models"),
-]
+# Define output directories for results, figures, models, and logs
+output_dirs = {
+    "results": os.path.join(project_root, "reports", "results"),
+    "figures": os.path.join(project_root, "reports", "figures"),
+    "models": os.path.join(project_root, "models", "baseline_models"),
+    "logs": os.path.join(project_root, "logs"),
+}
 
 # Create output directories if they don't exist
-for directory in output_dirs:
+for directory in output_dirs.values():
     os.makedirs(directory, exist_ok=True)
+
+# Setup Logging
+log_file = os.path.join(output_dirs["logs"], 'baseline_training.log')
+logging.basicConfig(
+    filename=log_file,
+    filemode='a',
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
 # Function to list directory contents
 def list_directory_contents(directory, num_items=10):
@@ -130,7 +131,6 @@ print(f"Train directory exists: {os.path.exists(train_dir)}")
 print(f"Validation directory exists: {os.path.exists(valid_dir)}")
 list_directory_contents(train_dir, num_items=10)
 list_directory_contents(valid_dir, num_items=10)
-
 # ================================================================
 # Load Label Mappings
 # ================================================================
@@ -902,15 +902,22 @@ def evaluate_model_post_training(model, dataloader, device, idx_to_disease, mode
     print(f"\n{model_name} - Evaluation Loss: {avg_loss:.4f}")
 
     # Classification Report
+    report_dict = classification_report(all_labels, all_preds, target_names=list(idx_to_disease.values()), output_dict=True)
     report = classification_report(all_labels, all_preds, target_names=list(idx_to_disease.values()))
     print(f"\n{model_name} - Classification Report:")
     print(report)
 
-    wandb.log({f"{model_name}/classification_report": report})
+    # Save classification report as JSON
+    report_save_path = os.path.join(output_dirs["results"], f"{model_name}_classification_report.json")
+    with open(report_save_path, 'w') as f:
+        json.dump(report_dict, f, indent=4)
+    print(f"Classification report saved at {report_save_path}")
+
+    wandb.log({f"{model_name}/classification_report": wandb.Table(dataframe=pd.DataFrame(report_dict).transpose())})
 
     # Confusion Matrix
     cm = confusion_matrix(all_labels, all_preds)
-    plt.figure(figsize=(12, 10))
+    plt.figure(figsize=(15, 12))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
                 xticklabels=list(idx_to_disease.values()), 
                 yticklabels=list(idx_to_disease.values()))
@@ -924,6 +931,11 @@ def evaluate_model_post_training(model, dataloader, device, idx_to_disease, mode
     wandb.log({f"{model_name}/confusion_matrix": wandb.Image(cm_save_path)})
     plt.close()
     print(f"Confusion matrix saved at {cm_save_path}")
+
+    # Save confusion matrix data
+    cm_data_save_path = os.path.join(output_dirs["results"], f"{model_name}_confusion_matrix.npy")
+    np.save(cm_data_save_path, cm)
+    print(f"Confusion matrix data saved at {cm_data_save_path}")
 
 # ================================================================
 # Initialize Weights & Biases (W&B)
@@ -964,7 +976,7 @@ def train_model(model, model_name, train_loader, valid_loader, loss_fn, optimize
         optimizer (Optimizer): Optimizer.
         scheduler (torch.optim.lr_scheduler): Learning rate scheduler.
         device (torch.device): Device to train on.
-        output_dirs (list): List of output directories for saving models and figures.
+        output_dirs (dict): Dictionary of output directories for saving models and figures.
         num_epochs (int): Number of training epochs.
 
     Returns:
@@ -974,10 +986,10 @@ def train_model(model, model_name, train_loader, valid_loader, loss_fn, optimize
     early_stopping = EarlyStopping(
         patience=EARLY_STOPPING_PATIENCE, 
         verbose=True, 
-        path=os.path.join(output_dirs[2], f"{model_name}_early_stop_model.pth")
+        path=os.path.join(output_dirs["models"], f"{model_name}_early_stop_model.pth")
     )
     model_checkpoint = ModelCheckpoint(
-        path=os.path.join(output_dirs[2], f"{model_name}_best_val_loss_model.pth"), 
+        path=os.path.join(output_dirs["models"], f"{model_name}_best_val_loss_model.pth"), 
         verbose=True
     )
 
@@ -1061,8 +1073,20 @@ def train_model(model, model_name, train_loader, valid_loader, loss_fn, optimize
     # Log total training time to W&B
     wandb.log({f"{model_name}/total_training_time_minutes": total_duration/60})
 
+    # Save metrics to CSV files
+    metrics_df = pd.DataFrame({
+        'epoch': range(1, len(train_losses)+1),
+        'train_loss': train_losses,
+        'train_accuracy': train_accuracies,
+        'val_loss': val_losses,
+        'val_accuracy': val_accuracies
+    })
+    metrics_save_path = os.path.join(output_dirs["results"], f'{model_name}_training_metrics.csv')
+    metrics_df.to_csv(metrics_save_path, index=False)
+    print(f"{model_name} - Training metrics saved at {metrics_save_path}")
+
     # Plot training metrics
-    plot_save_path = os.path.join(output_dirs[1], f"{model_name}_training_validation_metrics.png")
+    plot_save_path = os.path.join(output_dirs["figures"], f"{model_name}_training_validation_metrics.png")
     plot_training_metrics(
         train_losses, 
         train_accuracies, 
@@ -1079,7 +1103,7 @@ def train_model(model, model_name, train_loader, valid_loader, loss_fn, optimize
         device=device, 
         idx_to_disease=idx_to_disease, 
         model_name=model_name, 
-        save_dir=output_dirs[1]
+        save_dir=output_dirs["figures"]
     )
 
 # ================================================================
