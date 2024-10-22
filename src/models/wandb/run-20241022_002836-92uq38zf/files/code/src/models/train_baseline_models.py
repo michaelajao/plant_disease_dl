@@ -1,4 +1,4 @@
-# train_vit_model.py
+# train_baseline_models.py
 
 # ================================================================
 # Import Necessary Libraries
@@ -6,34 +6,48 @@
 import os
 import sys
 import json
+import random
 import logging
 import time
+import logging
 import numpy as np
 import pandas as pd
 from PIL import Image
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import classification_report, confusion_matrix
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
-import matplotlib.pyplot as plt
-import seaborn as sns
+
+# tqdm for progress bars
 from tqdm.auto import tqdm
-from torch.cuda.amp import autocast, GradScaler
-import wandb
-from sklearn.metrics import classification_report, confusion_matrix
 
 # Suppress warnings for cleaner output
 import warnings
 warnings.filterwarnings("ignore")
 
+# For mixed precision training
+from torch.cuda.amp import autocast, GradScaler
+
+# For Weights & Biases integration
+import wandb
+
+# For model definitions
+import timm
+
 # ================================================================
 # Helper Functions and Settings
 # ================================================================
-
+# Assuming helper_functions.py exists and contains set_seeds
+# Adjust the path as necessary
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-from helper_functions import set_seeds
+from helper_functions import set_seeds  # Adjust import based on your project structure
 from helper_functions import *
+
 
 # ================================================================
 # Configuration and Settings
@@ -44,16 +58,15 @@ set_seeds(42)
 
 # Hyperparameters
 BATCH_SIZE = 32          # Adjust based on GPU memory
-LEARNING_RATE = 1e-4     # Lower learning rate for training from scratch
-NUM_EPOCHS = 50          # Increased epochs for better training
+LEARNING_RATE = 1e-3     # Adjust as necessary
+NUM_EPOCHS = 50          # Adjust based on experimentation
 HEIGHT, WIDTH = 224, 224 # Image dimensions
 
 # Early Stopping Parameters
 EARLY_STOPPING_PATIENCE = 10  # Increased patience for early stopping
 
 # W&B Project Name
-WANDB_PROJECT_NAME = "Plant_Leaf_Disease_ViT"
-model_name = "ViT"  # Define model name globally
+WANDB_PROJECT_NAME = "Plant_Leaf_Disease_Baselines"
 
 # ================================================================
 # Device Configuration
@@ -86,7 +99,7 @@ valid_dir = os.path.join(data_path, "valid")
 output_dirs = {
     "results": os.path.join(project_root, "reports", "results"),
     "figures": os.path.join(project_root, "reports", "figures"),
-    "models": os.path.join(project_root, "models", "ViT"),
+    "models": os.path.join(project_root, "models", "baseline_models"),
     "logs": os.path.join(project_root, "logs"),
 }
 
@@ -95,7 +108,7 @@ for directory in output_dirs.values():
     os.makedirs(directory, exist_ok=True)
 
 # Setup Logging
-log_file = os.path.join(output_dirs["logs"], 'vit_training.log')
+log_file = os.path.join(output_dirs["logs"], 'baseline_training.log')
 logging.basicConfig(
     filename=log_file,
     filemode='a',
@@ -107,7 +120,9 @@ logging.basicConfig(
 def list_directory_contents(directory, num_items=10):
     if os.path.exists(directory):
         contents = os.listdir(directory)
-        print(f"Contents of {directory} ({len(contents)} items): {contents[:num_items]}...")
+        print(
+            f"Contents of {directory} ({len(contents)} items): {contents[:num_items]}..."
+        )
     else:
         print(f"Directory does not exist: {directory}")
 
@@ -116,7 +131,6 @@ print(f"Train directory exists: {os.path.exists(train_dir)}")
 print(f"Validation directory exists: {os.path.exists(valid_dir)}")
 list_directory_contents(train_dir, num_items=10)
 list_directory_contents(valid_dir, num_items=10)
-
 # ================================================================
 # Load Label Mappings
 # ================================================================
@@ -251,7 +265,7 @@ class PlantDiseaseDataset(Dataset):
         return image, label_idx
 
 # ================================================================
-# Data Transforms with Class-Specific Augmentations
+# Data Transforms
 # ================================================================
 
 # Define transforms for majority classes
@@ -260,10 +274,10 @@ transform_major = transforms.Compose([
     transforms.RandomHorizontalFlip(),
     transforms.RandomRotation(15),
     transforms.ToTensor(),
-    # transforms.Normalize(
-    #     mean=[0.485, 0.456, 0.406],   # Mean for ImageNet
-    #     std=[0.229, 0.224, 0.225]     # Std for ImageNet
-    # ),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],   # Mean for ImageNet
+        std=[0.229, 0.224, 0.225]     # Std for ImageNet
+    ),
 ])
 
 # Define transforms for minority classes with additional augmentations
@@ -275,15 +289,26 @@ transform_minority = transforms.Compose([
     transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.2),  # Color jitter
     transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
     transforms.ToTensor(),
-    # transforms.Normalize(
-    #     mean=[0.485, 0.456, 0.406],   # Mean for ImageNet
-    #     std=[0.229, 0.224, 0.225]     # Std for ImageNet
-    # ),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],   # Mean for ImageNet
+        std=[0.229, 0.224, 0.225]     # Std for ImageNet
+    ),
 ])
 
 # ================================================================
 # Initialize Datasets and DataLoaders (Using WeightedRandomSampler)
 # ================================================================
+
+# Initialize training dataset
+train_dataset = PlantDiseaseDataset(
+    csv_file=train_split_csv,
+    images_dir=train_dir,
+    transform_major=transform_major,
+    transform_minority=transform_minority,
+    minority_classes=minority_classes,
+    image_col='image',
+    label_col='label'
+)
 
 # Path to validation split CSV
 valid_split_csv = os.path.join(data_path, "valid_split.csv")
@@ -301,17 +326,6 @@ if os.path.exists(valid_split_csv):
 else:
     print(f"Error: Validation split CSV not found at {valid_split_csv}. Exiting.")
     sys.exit(1)
-
-# Initialize training dataset
-train_dataset = PlantDiseaseDataset(
-    csv_file=train_split_csv,
-    images_dir=train_dir,
-    transform_major=transform_major,
-    transform_minority=transform_minority,
-    minority_classes=minority_classes,
-    image_col='image',
-    label_col='label'
-)
 
 # Create WeightedRandomSampler for the training DataLoader
 # Compute class counts and weights
@@ -359,297 +373,253 @@ if len(train_dataset) > 0:
 else:
     print("\nTraining dataset is empty. Please check your dataset and label mappings.")
 
-
 # ================================================================
-# Vision Transformer (ViT) Architecture
+# Baseline Model Definitions
 # ================================================================
 
-class PatchEmbedding(nn.Module):
-    def __init__(self, img_size=224, patch_size=16, in_channels=3, embed_dim=768):
-        """
-        Args:
-            img_size (int): Size of the input image (assumed square).
-            patch_size (int): Size of each patch (assumed square).
-            in_channels (int): Number of input channels (e.g., 3 for RGB).
-            embed_dim (int): Dimension of the embedding space.
-        """
-        super(PatchEmbedding, self).__init__()
-        self.img_size = img_size
-        self.patch_size = patch_size
-        self.num_patches = (img_size // patch_size) ** 2
+# ------------------------------
+# Baseline Model Definition
+# ------------------------------
+class BaselineModel(nn.Module):
+    """
+    Defines a simple baseline model with fewer layers.
 
-        # Using a Conv2d layer to perform patch extraction and embedding
-        self.proj = nn.Conv2d(
-            in_channels, 
-            embed_dim, 
-            kernel_size=patch_size, 
-            stride=patch_size
+    Args:
+        input_shape (int): Number of input channels.
+        hidden_units (int): Number of units in the hidden layers.
+        output_shape (int): Number of output classes.
+    """
+
+    def __init__(self, input_shape: int, hidden_units: int, output_shape: int):
+        super(BaselineModel, self).__init__()
+        # Define convolutional layers
+        self.conv_block = nn.Sequential(
+            nn.Conv2d(
+                in_channels=input_shape,
+                out_channels=hidden_units,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
         )
-        
-    def forward(self, x):
-        """
-        Args:
-            x (Tensor): Input tensor of shape [batch_size, in_channels, img_size, img_size]
-        
-        Returns:
-            Tensor: Patch embeddings of shape [batch_size, num_patches, embed_dim]
-        """
-        x = self.proj(x)  # Shape: [batch_size, embed_dim, num_patches**0.5, num_patches**0.5]
-        x = x.flatten(2)  # Shape: [batch_size, embed_dim, num_patches]
-        x = x.transpose(1, 2)  # Shape: [batch_size, num_patches, embed_dim]
-        return x
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, embed_dim, num_patches, dropout=0.1):
-        """
-        Args:
-            embed_dim (int): Dimension of the embedding space.
-            num_patches (int): Number of patches in the input.
-            dropout (float): Dropout rate.
-        """
-        super(PositionalEncoding, self).__init__()
-        self.pos_embedding = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
-        self.dropout = nn.Dropout(p=dropout)
-        
-        # Initialize the positional embeddings
-        nn.init.trunc_normal_(self.pos_embedding, std=0.02)
-    
-    def forward(self, x):
-        """
-        Args:
-            x (Tensor): Input tensor of shape [batch_size, num_patches, embed_dim]
-        
-        Returns:
-            Tensor: Positionally encoded tensor of shape [batch_size, num_patches + 1, embed_dim]
-        """
-        batch_size, num_patches, embed_dim = x.size()
-        
-        # [CLS] token: a learnable embedding prepended to the patch embeddings
-        cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim)).to(x.device)
-        cls_token = cls_token.expand(batch_size, -1, -1)  # Shape: [batch_size, 1, embed_dim]
-        
-        # Concatenate [CLS] token with patch embeddings
-        x = torch.cat((cls_token, x), dim=1)  # Shape: [batch_size, num_patches + 1, embed_dim]
-        
-        # Add positional embeddings
-        x = x + self.pos_embedding[:, :x.size(1), :]
-        x = self.dropout(x)
-        return x
-
-class MultiHeadSelfAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout=0.1):
-        """
-        Args:
-            embed_dim (int): Dimension of the embedding space.
-            num_heads (int): Number of attention heads.
-            dropout (float): Dropout rate.
-        """
-        super(MultiHeadSelfAttention, self).__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        assert embed_dim % num_heads == 0, "Embedding dimension must be divisible by number of heads."
-        
-        self.head_dim = embed_dim // num_heads
-        self.scale = self.head_dim ** -0.5
-        
-        # Query, Key, Value projections
-        self.qkv = nn.Linear(embed_dim, embed_dim * 3)
-        self.attn_dropout = nn.Dropout(dropout)
-        self.proj = nn.Linear(embed_dim, embed_dim)
-        self.proj_dropout = nn.Dropout(dropout)
-        
-    def forward(self, x):
-        """
-        Args:
-            x (Tensor): Input tensor of shape [batch_size, num_tokens, embed_dim]
-        
-        Returns:
-            Tensor: Output tensor of shape [batch_size, num_tokens, embed_dim]
-        """
-        batch_size, num_tokens, embed_dim = x.size()
-        
-        # Linear projection and split into Q, K, V
-        qkv = self.qkv(x)  # Shape: [batch_size, num_tokens, 3 * embed_dim]
-        qkv = qkv.reshape(batch_size, num_tokens, 3, self.num_heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)  # Shape: [3, batch_size, num_heads, num_tokens, head_dim]
-        q, k, v = qkv[0], qkv[1], qkv[2]  # Each shape: [batch_size, num_heads, num_tokens, head_dim]
-        
-        # Compute scaled dot-product attention
-        attn_scores = (q @ k.transpose(-2, -1)) * self.scale  # Shape: [batch_size, num_heads, num_tokens, num_tokens]
-        attn_probs = attn_scores.softmax(dim=-1)  # Shape: [batch_size, num_heads, num_tokens, num_tokens]
-        attn_probs = self.attn_dropout(attn_probs)
-        
-        # Weighted sum of values
-        attn_output = attn_probs @ v  # Shape: [batch_size, num_heads, num_tokens, head_dim]
-        attn_output = attn_output.transpose(1, 2)  # Shape: [batch_size, num_tokens, num_heads, head_dim]
-        attn_output = attn_output.flatten(2)  # Shape: [batch_size, num_tokens, embed_dim]
-        
-        # Final linear projection
-        out = self.proj(attn_output)  # Shape: [batch_size, num_tokens, embed_dim]
-        out = self.proj_dropout(out)
-        return out
-
-class FeedForward(nn.Module):
-    def __init__(self, embed_dim, hidden_dim, dropout=0.1):
-        """
-        Args:
-            embed_dim (int): Dimension of the embedding space.
-            hidden_dim (int): Dimension of the hidden layer.
-            dropout (float): Dropout rate.
-        """
-        super(FeedForward, self).__init__()
-        self.fc1 = nn.Linear(embed_dim, hidden_dim)
-        self.act = nn.GELU()
-        self.fc2 = nn.Linear(hidden_dim, embed_dim)
-        self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, x):
-        """
-        Args:
-            x (Tensor): Input tensor of shape [batch_size, num_tokens, embed_dim]
-        
-        Returns:
-            Tensor: Output tensor of shape [batch_size, num_tokens, embed_dim]
-        """
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.dropout(x)
-        x = self.fc2(x)
-        x = self.dropout(x)
-        return x
-
-class TransformerEncoderBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, mlp_ratio=4.0, dropout=0.1):
-        """
-        Args:
-            embed_dim (int): Dimension of the embedding space.
-            num_heads (int): Number of attention heads.
-            mlp_ratio (float): Ratio of the hidden dimension in FFN to embed_dim.
-            dropout (float): Dropout rate.
-        """
-        super(TransformerEncoderBlock, self).__init__()
-        self.norm1 = nn.LayerNorm(embed_dim, eps=1e-6)
-        self.mhsa = MultiHeadSelfAttention(embed_dim, num_heads, dropout)
-        self.norm2 = nn.LayerNorm(embed_dim, eps=1e-6)
-        self.ffn = FeedForward(embed_dim, int(embed_dim * mlp_ratio), dropout)
-        
-    def forward(self, x):
-        """
-        Args:
-            x (Tensor): Input tensor of shape [batch_size, num_tokens, embed_dim]
-        
-        Returns:
-            Tensor: Output tensor of shape [batch_size, num_tokens, embed_dim]
-        """
-        # MHSA block with residual connection
-        x = x + self.mhsa(self.norm1(x))
-        
-        # FFN block with residual connection
-        x = x + self.ffn(self.norm2(x))
-        
-        return x
-
-class VisionTransformer(nn.Module):
-    def __init__(
-        self, 
-        img_size=224, 
-        patch_size=16, 
-        in_channels=3, 
-        num_classes=1000, 
-        embed_dim=768, 
-        depth=12, 
-        num_heads=12, 
-        mlp_ratio=4.0, 
-        dropout=0.1,
-    ):
-        """
-        Args:
-            img_size (int): Size of the input image (assumed square).
-            patch_size (int): Size of each patch (assumed square).
-            in_channels (int): Number of input channels (e.g., 3 for RGB).
-            num_classes (int): Number of output classes.
-            embed_dim (int): Dimension of the embedding space.
-            depth (int): Number of transformer encoder blocks.
-            num_heads (int): Number of attention heads.
-            mlp_ratio (float): Ratio of the hidden dimension in FFN to embed_dim.
-            dropout (float): Dropout rate.
-        """
-        super(VisionTransformer, self).__init__()
-        self.patch_embed = PatchEmbedding(img_size, patch_size, in_channels, embed_dim)
-        num_patches = self.patch_embed.num_patches
-        
-        self.pos_embed = PositionalEncoding(embed_dim, num_patches, dropout)
-        
-        # Transformer Encoder Blocks
-        self.transformer = nn.Sequential(
-            *[
-                TransformerEncoderBlock(embed_dim, num_heads, mlp_ratio, dropout)
-                for _ in range(depth)
-            ]
+        # Define fully connected layers
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(
+                in_features=hidden_units * (HEIGHT // 2) * (WIDTH // 2),
+                out_features=output_shape,
+            ),
         )
-        
-        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
-        
-        # Classification Head
-        self.cls_head = nn.Linear(embed_dim, num_classes)
-        
+
     def forward(self, x):
-        """
-        Args:
-            x (Tensor): Input tensor of shape [batch_size, in_channels, img_size, img_size]
-        
-        Returns:
-            Tensor: Logits of shape [batch_size, num_classes]
-        """
-        x = self.patch_embed(x)  # Shape: [batch_size, num_patches, embed_dim]
-        x = self.pos_embed(x)    # Shape: [batch_size, num_patches + 1, embed_dim]
-        x = self.transformer(x)  # Shape: [batch_size, num_patches + 1, embed_dim]
-        x = self.norm(x)         # Shape: [batch_size, num_patches + 1, embed_dim]
-        
-        # [CLS] token is the first token
-        cls_token = x[:, 0]      # Shape: [batch_size, embed_dim]
-        logits = self.cls_head(cls_token)  # Shape: [batch_size, num_classes]
-        return logits
+        x = self.conv_block(x)  # Convolutional layers
+        x = self.classifier(x)  # Fully connected layers
+        return x
+
+# ------------------------------
+# ConvNetPlus Model Definition
+# ------------------------------
+class ConvNetPlus(nn.Module):
+    """
+    Defines an improved model with additional layers, batch normalization, and dropout.
+
+    Args:
+        input_shape (int): Number of input channels.
+        hidden_units (int): Number of units in the hidden layers.
+        output_shape (int): Number of output classes.
+    """
+
+    def __init__(self, input_shape: int, hidden_units: int, output_shape: int):
+        super(ConvNetPlus, self).__init__()
+        # First convolutional block
+        self.conv_block_1 = nn.Sequential(
+            nn.Conv2d(
+                in_channels=input_shape,
+                out_channels=hidden_units,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
+            nn.BatchNorm2d(hidden_units),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout(0.25),
+        )
+        # Second convolutional block
+        self.conv_block_2 = nn.Sequential(
+            nn.Conv2d(
+                in_channels=hidden_units,
+                out_channels=hidden_units * 2,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
+            nn.BatchNorm2d(hidden_units * 2),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout(0.25),
+        )
+        # Fully connected layers
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(
+                in_features=hidden_units * 2 * (HEIGHT // 4) * (WIDTH // 4),
+                out_features=hidden_units * 4,
+            ),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(in_features=hidden_units * 4, out_features=output_shape),
+        )
+
+    def forward(self, x):
+        x = self.conv_block_1(x)
+        x = self.conv_block_2(x)
+        x = self.classifier(x)
+        return x
+
+# ------------------------------
+# TinyVGG Model Definition
+# ------------------------------
+class TinyVGG(nn.Module):
+    """
+    Defines a TinyVGG model.
+
+    Args:
+        input_shape (int): Number of input channels.
+        hidden_units (int): Number of units in the hidden layers.
+        output_shape (int): Number of output classes.
+    """
+
+    def __init__(self, input_shape: int, hidden_units: int, output_shape: int):
+        super(TinyVGG, self).__init__()
+        # First convolutional block
+        self.conv_block_1 = nn.Sequential(
+            nn.Conv2d(
+                in_channels=input_shape,
+                out_channels=hidden_units,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
+            nn.ReLU(),
+            nn.Conv2d(
+                in_channels=hidden_units,
+                out_channels=hidden_units,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+        )
+        # Second convolutional block
+        self.conv_block_2 = nn.Sequential(
+            nn.Conv2d(
+                in_channels=hidden_units,
+                out_channels=hidden_units * 2,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
+            nn.ReLU(),
+            nn.Conv2d(
+                in_channels=hidden_units * 2,
+                out_channels=hidden_units * 2,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+            ),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+        )
+        # Fully connected layer
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(
+                in_features=hidden_units * 2 * (HEIGHT // 4) * (WIDTH // 4),
+                out_features=output_size,
+            ),
+        )
+
+    def forward(self, x):
+        x = self.conv_block_1(x)
+        x = self.conv_block_2(x)
+        x = self.classifier(x)
+        return x
 
 # ================================================================
-# Model Initialization
+# EfficientNetV2 Model Definition
+# ================================================================
+
+def get_efficientnetv2_model(output_size: int):
+    """
+    Instantiates an EfficientNetV2 model with pretrained weights.
+
+    Args:
+        output_size (int): Number of output classes.
+
+    Returns:
+        nn.Module: EfficientNetV2 model.
+    """
+    model = timm.create_model(
+        "efficientnetv2_rw_s",  # Using EfficientNetV2 RW small version
+        pretrained=True,         # Use pretrained weights
+        num_classes=output_size, # Adjust output size to match number of classes
+    )
+    return model
+
+# ================================================================
+# Instantiate Models and Optimizers
 # ================================================================
 
 # Define the number of classes
 output_size = len(disease_to_idx)
 
-# Initialize Vision Transformer model from scratch
-vit_model = VisionTransformer(
-    img_size=HEIGHT,
-    patch_size=16,
-    in_channels=3,
-    num_classes=output_size,
-    embed_dim=768,
-    depth=12,
-    num_heads=12,
-    mlp_ratio=4.0,
-    dropout=0.1,
-)
+# Instantiate models
+baseline_model = BaselineModel(input_shape=3, hidden_units=10, output_shape=output_size)
+convnetplus_model = ConvNetPlus(input_shape=3, hidden_units=32, output_shape=output_size)
+tinyvgg_model = TinyVGG(input_shape=3, hidden_units=64, output_shape=output_size)
+efficientnetv2_model = get_efficientnetv2_model(output_size=output_size)
 
-# Move the model to the configured device
-vit_model = vit_model.to(device)
+# Move models to device
+baseline_model = baseline_model.to(device)
+convnetplus_model = convnetplus_model.to(device)
+tinyvgg_model = tinyvgg_model.to(device)
+efficientnetv2_model = efficientnetv2_model.to(device)
 
 # If multiple GPUs are available, use DataParallel
 if num_gpus > 1:
-    vit_model = nn.DataParallel(vit_model)
+    baseline_model = nn.DataParallel(baseline_model)
+    convnetplus_model = nn.DataParallel(convnetplus_model)
+    tinyvgg_model = nn.DataParallel(tinyvgg_model)
+    efficientnetv2_model = nn.DataParallel(efficientnetv2_model)
 
-# ================================================================
-# Loss Function and Optimizer
-# ================================================================
+# Define loss function
+loss_fn = nn.CrossEntropyLoss()
 
-# Remove class weighting from loss function since we're using WeightedRandomSampler
-criterion = nn.CrossEntropyLoss()
+# Optimizers for each model
+baseline_optimizer = optim.Adam(baseline_model.parameters(), lr=LEARNING_RATE)
+convnetplus_optimizer = optim.SGD(convnetplus_model.parameters(), lr=LEARNING_RATE, momentum=0.9)
+tinyvgg_optimizer = optim.RMSprop(tinyvgg_model.parameters(), lr=LEARNING_RATE)
+efficientnetv2_optimizer = optim.Adam(
+    efficientnetv2_model.parameters(), lr=LEARNING_RATE
+)
 
-# Define optimizer with a lower learning rate for training from scratch
-optimizer = optim.AdamW(vit_model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-
-# Define a learning rate scheduler
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+# Learning rate schedulers
+baseline_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    baseline_optimizer, mode="min", factor=0.1, patience=3, verbose=True
+)
+convnetplus_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    convnetplus_optimizer, mode="min", factor=0.1, patience=3, verbose=True
+)
+tinyvgg_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    tinyvgg_optimizer, mode="min", factor=0.1, patience=3, verbose=True
+)
+efficientnetv2_scheduler = optim.lr_scheduler.StepLR(
+    efficientnetv2_optimizer, step_size=5, gamma=0.1, verbose=True
+)
 
 # ================================================================
 # Callbacks for Training Monitoring
@@ -722,18 +692,19 @@ class ModelCheckpoint:
 # Training and Validation Functions
 # ================================================================
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler, epoch, log_interval=10):
+def train_one_epoch(model, dataloader, loss_fn, optimizer, device, scaler, epoch, model_name, log_interval=10):
     """
     Trains the model for one epoch using mixed precision.
     
     Args:
         model (nn.Module): The model to train.
         dataloader (DataLoader): Training data loader.
-        criterion (nn.Module): Loss function.
+        loss_fn (nn.Module): Loss function.
         optimizer (Optimizer): Optimizer.
         device (torch.device): Device to train on.
         scaler (GradScaler): GradScaler for mixed precision.
         epoch (int): Current epoch number.
+        model_name (str): Name of the model for logging.
         log_interval (int): How often to log batch metrics.
     
     Returns:
@@ -744,7 +715,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler, epo
     correct_predictions = 0
     total_samples = 0
 
-    for batch_idx, (inputs, labels) in enumerate(tqdm(dataloader, desc="Training", leave=False)):
+    for batch_idx, (inputs, labels) in enumerate(tqdm(dataloader, desc=f"{model_name} - Training", leave=False)):
         inputs = inputs.to(device)
         labels = labels.to(device)
 
@@ -753,7 +724,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler, epo
         # Mixed precision training
         with autocast():
             outputs = model(inputs)
-            loss = criterion(outputs, labels)
+            loss = loss_fn(outputs, labels)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -767,13 +738,14 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler, epo
         # Enhanced Logging: Log every 'log_interval' batches
         if (batch_idx + 1) % log_interval == 0:
             unique, counts = np.unique(labels.cpu().numpy(), return_counts=True)
+            # Convert keys to strings to avoid TypeError
             class_distribution = {str(int(k)): int(v) for k, v in zip(unique, counts)}
             wandb.log({
                 f"{model_name}/train_loss": loss.item(),
                 f"{model_name}/batch_train_accuracy": torch.sum(preds == labels.data).item() / inputs.size(0),
                 f"{model_name}/batch_class_distribution": class_distribution
             })
-            print(f"Epoch [{epoch+1}], Batch [{batch_idx+1}/{len(dataloader)}] - Loss: {loss.item():.4f} | Class Distribution: {class_distribution}")
+            print(f"{model_name} - Epoch [{epoch+1}], Batch [{batch_idx+1}/{len(dataloader)}] - Loss: {loss.item():.4f} | Class Distribution: {class_distribution}")
 
     epoch_loss = running_loss / total_samples
     epoch_acc = correct_predictions.double() / total_samples
@@ -785,15 +757,16 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler, epo
 
     return epoch_loss, epoch_acc.item()
 
-def validate(model, dataloader, criterion, device, collect_metrics=True):
+def validate(model, dataloader, loss_fn, device, model_name, collect_metrics=True):
     """
     Validates the model.
     
     Args:
         model (nn.Module): The model to validate.
         dataloader (DataLoader): Validation data loader.
-        criterion (nn.Module): Loss function.
+        loss_fn (nn.Module): Loss function.
         device (torch.device): Device to validate on.
+        model_name (str): Name of the model for logging.
         collect_metrics (bool): If True, collect labels and predictions.
     
     Returns:
@@ -808,14 +781,14 @@ def validate(model, dataloader, criterion, device, collect_metrics=True):
     all_preds = []
 
     with torch.no_grad():
-        for inputs, labels in tqdm(dataloader, desc="Validation", leave=False):
+        for inputs, labels in tqdm(dataloader, desc=f"{model_name} - Validation", leave=False):
             inputs = inputs.to(device)
             labels = labels.to(device)
 
             # Mixed precision inference
             with autocast():
                 outputs = model(inputs)
-                loss = criterion(outputs, labels)
+                loss = loss_fn(outputs, labels)
 
             running_loss += loss.item() * inputs.size(0)
             _, preds = torch.max(outputs, 1)
@@ -965,22 +938,19 @@ def evaluate_model_post_training(model, dataloader, device, idx_to_disease, mode
     print(f"Confusion matrix data saved at {cm_data_save_path}")
 
 # ================================================================
-# Initialize W&B
+# Initialize Weights & Biases (W&B)
 # ================================================================
 
 # Initialize W&B run
 wandb.init(
     project=WANDB_PROJECT_NAME,
-    name="ViT_Training",
+    name="Baseline_Models_Training",
     config={
         "batch_size": BATCH_SIZE,
         "learning_rate": LEARNING_RATE,
         "epochs": NUM_EPOCHS,
-        "model": "VisionTransformer",
-        "optimizer": "AdamW",
-        "scheduler": "StepLR",
-        "num_classes": output_size,
         "image_size": f"{HEIGHT}x{WIDTH}",
+        "class_imbalance_handling": "WeightedRandomSampler",
     },
     save_code=True
 )
@@ -990,139 +960,201 @@ run_id = wandb.run.id
 print(f"W&B Run ID: {run_id}")
 
 # ================================================================
-# Callbacks for Training Monitoring
+# Training Loop for Baseline Models
 # ================================================================
 
-# Initialize EarlyStopping and ModelCheckpoint
-early_stopping = EarlyStopping(
-    patience=EARLY_STOPPING_PATIENCE, 
-    verbose=True, 
-    path=os.path.join(output_dirs["models"], "best_val_loss_model.pth")  # Use "models" key here
-)
-model_checkpoint = ModelCheckpoint(
-    path=os.path.join(output_dirs["models"], "best_val_loss_model.pth"),  # Use "models" key here
-    verbose=True
-)
+def train_model(model, model_name, train_loader, valid_loader, loss_fn, optimizer, scheduler, device, output_dirs, num_epochs=50):
+    """
+    Trains and validates a given model.
 
+    Args:
+        model (nn.Module): The model to train.
+        model_name (str): Name of the model for identification.
+        train_loader (DataLoader): Training data loader.
+        valid_loader (DataLoader): Validation data loader.
+        loss_fn (nn.Module): Loss function.
+        optimizer (Optimizer): Optimizer.
+        scheduler (torch.optim.lr_scheduler): Learning rate scheduler.
+        device (torch.device): Device to train on.
+        output_dirs (dict): Dictionary of output directories for saving models and figures.
+        num_epochs (int): Number of training epochs.
 
-# ================================================================
-# Initialize GradScaler for Mixed Precision
-# ================================================================
-scaler = GradScaler()
-
-# ================================================================
-# Training Loop with Callbacks and Mixed Precision
-# ================================================================
-
-# Initialize lists to store metrics
-train_losses = []
-train_accuracies = []
-val_losses = []
-val_accuracies = []
-
-# Time tracking
-total_start_time = time.time()
-
-for epoch in range(NUM_EPOCHS):
-    print(f"\nEpoch {epoch+1}/{NUM_EPOCHS}")
-    print("-" * 30)
-    
-    epoch_start_time = time.time()
-    
-    # Training Phase
-    train_loss, train_acc = train_one_epoch(
-        model=vit_model,
-        dataloader=train_loader,
-        criterion=criterion,
-        optimizer=optimizer,
-        device=device,
-        scaler=scaler,
-        epoch=epoch
+    Returns:
+        None
+    """
+    # Initialize EarlyStopping and ModelCheckpoint
+    early_stopping = EarlyStopping(
+        patience=EARLY_STOPPING_PATIENCE, 
+        verbose=True, 
+        path=os.path.join(output_dirs["models"], f"{model_name}_early_stop_model.pth")
     )
-    print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc*100:.2f}%")
-    
-    # Validation Phase
-    val_loss, val_acc, _, _ = validate(
-        model=vit_model,
-        dataloader=valid_loader,
-        criterion=criterion,
-        device=device
+    model_checkpoint = ModelCheckpoint(
+        path=os.path.join(output_dirs["models"], f"{model_name}_best_val_loss_model.pth"), 
+        verbose=True
     )
-    print(f"Valid Loss: {val_loss:.4f} | Valid Acc: {val_acc*100:.2f}%")
-    
-    epoch_end_time = time.time()
-    epoch_duration = epoch_end_time - epoch_start_time
-    print(f"Epoch Duration: {epoch_duration:.2f} seconds")
-    
-    # Append metrics
-    train_losses.append(train_loss)
-    train_accuracies.append(train_acc)
-    val_losses.append(val_loss)
-    val_accuracies.append(val_acc)
-    
-    # Learning rate scheduler step
-    scheduler.step()
-    
-    # Log learning rate
-    current_lr = scheduler.get_last_lr()[0]
-    wandb.log({f"{vit_model.__class__.__name__}/learning_rate": current_lr})
-    
-    # Model checkpoint based on validation loss
-    model_checkpoint(val_loss, vit_model)
-    
-    # Early Stopping based on validation loss
-    early_stopping(val_loss, vit_model)
-    if early_stopping.early_stop:
-        print("Early stopping triggered!")
-        break
 
-total_end_time = time.time()
-total_duration = total_end_time - total_start_time
-print(f"\nTotal Training Time: {total_duration/60:.2f} minutes")
+    # Initialize GradScaler for mixed precision
+    scaler = GradScaler()
 
-# Log total training time to W&B
-wandb.log({"total_training_time_minutes": total_duration/60})
+    # Initialize lists to store metrics
+    train_losses = []
+    train_accuracies = []
+    val_losses = []
+    val_accuracies = []
+
+    # Time tracking
+    total_start_time = time.time()
+
+    for epoch in range(num_epochs):
+        print(f"\n{model_name} - Epoch {epoch+1}/{num_epochs}")
+        print("-" * 30)
+        
+        epoch_start_time = time.time()
+        
+        # Training Phase
+        train_loss, train_acc = train_one_epoch(
+            model=model,
+            dataloader=train_loader,
+            loss_fn=loss_fn,
+            optimizer=optimizer,
+            device=device,
+            scaler=scaler,
+            epoch=epoch,
+            model_name=model_name
+        )
+        print(f"{model_name} - Train Loss: {train_loss:.4f} | Train Acc: {train_acc*100:.2f}%")
+        
+        # Validation Phase
+        val_loss, val_acc, _, _ = validate(
+            model=model,
+            dataloader=valid_loader,
+            loss_fn=loss_fn,
+            device=device,
+            model_name=model_name
+        )
+        print(f"{model_name} - Valid Loss: {val_loss:.4f} | Valid Acc: {val_acc*100:.2f}%")
+        
+        epoch_end_time = time.time()
+        epoch_duration = epoch_end_time - epoch_start_time
+        print(f"{model_name} - Epoch Duration: {epoch_duration:.2f} seconds")
+        
+        # Append metrics
+        train_losses.append(train_loss)
+        train_accuracies.append(train_acc)
+        val_losses.append(val_loss)
+        val_accuracies.append(val_acc)
+        
+        # Learning rate scheduler step
+        if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+            scheduler.step(val_loss)
+        else:
+            scheduler.step()
+        
+        # Log learning rate
+        if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+            current_lr = optimizer.param_groups[0]['lr']
+        else:
+            current_lr = scheduler.get_last_lr()[0]
+        wandb.log({f"{model_name}/learning_rate": current_lr})
+        
+        # Model checkpoint based on validation loss
+        model_checkpoint(val_loss, model)
+        
+        # Early Stopping based on validation loss
+        early_stopping(val_loss, model)
+        if early_stopping.early_stop:
+            print(f"{model_name} - Early stopping triggered!")
+            break
+
+    total_end_time = time.time()
+    total_duration = total_end_time - total_start_time
+    print(f"\n{model_name} - Total Training Time: {total_duration/60:.2f} minutes")
+
+    # Log total training time to W&B
+    wandb.log({f"{model_name}/total_training_time_minutes": total_duration/60})
+
+    # Save metrics to CSV files
+    metrics_df = pd.DataFrame({
+        'epoch': range(1, len(train_losses)+1),
+        'train_loss': train_losses,
+        'train_accuracy': train_accuracies,
+        'val_loss': val_losses,
+        'val_accuracy': val_accuracies
+    })
+    metrics_save_path = os.path.join(output_dirs["results"], f'{model_name}_training_metrics.csv')
+    metrics_df.to_csv(metrics_save_path, index=False)
+    print(f"{model_name} - Training metrics saved at {metrics_save_path}")
+
+    # Plot training metrics
+    plot_save_path = os.path.join(output_dirs["figures"], f"{model_name}_training_validation_metrics.png")
+    plot_training_metrics(
+        train_losses, 
+        train_accuracies, 
+        val_losses, 
+        val_accuracies, 
+        model_name=model_name,
+        save_path=plot_save_path
+    )
+
+    # Perform post-training evaluation on the validation set
+    evaluate_model_post_training(
+        model=model, 
+        dataloader=valid_loader, 
+        device=device, 
+        idx_to_disease=idx_to_disease, 
+        model_name=model_name, 
+        save_dir=output_dirs["figures"]
+    )
 
 # ================================================================
-# Save Metrics to Results Folder
+# Main Execution
 # ================================================================
 
-# Save metrics to CSV files
-metrics_df = pd.DataFrame({
-    'epoch': range(1, len(train_losses)+1),
-    'train_loss': train_losses,
-    'train_accuracy': train_accuracies,
-    'val_loss': val_losses,
-    'val_accuracy': val_accuracies
-})
-metrics_save_path = os.path.join(output_dirs["results"], f'{model_name}_training_metrics.csv')
-metrics_df.to_csv(metrics_save_path, index=False)
-print(f"Training metrics saved at {metrics_save_path}")
+if __name__ == "__main__":
+    # List of models to train
+    models = [
+        {
+            "model": baseline_model,
+            "name": "BaselineModel",
+            "optimizer": baseline_optimizer,
+            "scheduler": baseline_scheduler
+        },
+        {
+            "model": convnetplus_model,
+            "name": "ConvNetPlus",
+            "optimizer": convnetplus_optimizer,
+            "scheduler": convnetplus_scheduler
+        },
+        {
+            "model": tinyvgg_model,
+            "name": "TinyVGG",
+            "optimizer": tinyvgg_optimizer,
+            "scheduler": tinyvgg_scheduler
+        },
+        {
+            "model": efficientnetv2_model,
+            "name": "EfficientNetV2",
+            "optimizer": efficientnetv2_optimizer,
+            "scheduler": efficientnetv2_scheduler
+        },
+    ]
 
-# ================================================================
-# Visualization and Saving Artifacts
-# ================================================================
+    for m in models:
+        print(f"\n{'='*50}\nStarting Training for {m['name']}\n{'='*50}")
+        wandb.run.name = f"{m['name']}_Training"
+        wandb.run.save()
+        train_model(
+            model=m["model"],
+            model_name=m["name"],
+            train_loader=train_loader,
+            valid_loader=valid_loader,
+            loss_fn=loss_fn,
+            optimizer=m["optimizer"],
+            scheduler=m["scheduler"],
+            device=device,
+            output_dirs=output_dirs,
+            num_epochs=NUM_EPOCHS
+        )
 
-# Plot training metrics
-plot_save_path = os.path.join(output_dirs["figures"], f"{model_name}_training_validation_metrics.png")
-plot_training_metrics(
-    train_losses, 
-    train_accuracies, 
-    val_losses, 
-    val_accuracies, 
-    model_name=model_name,
-    save_path=plot_save_path
-)
-
-# Perform post-training evaluation on the validation set
-evaluate_model_post_training(
-    model=vit_model, 
-    dataloader=valid_loader, 
-    device=device, 
-    idx_to_disease=idx_to_disease, 
-    model_name=model_name, 
-    save_dir=output_dirs["figures"]
-)
-
-# Save W&B artifacts
-wandb.finish()
+    # Finalize W&B run
+    wandb.finish()

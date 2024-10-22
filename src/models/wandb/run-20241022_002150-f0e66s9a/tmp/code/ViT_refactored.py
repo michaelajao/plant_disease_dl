@@ -997,12 +997,13 @@ print(f"W&B Run ID: {run_id}")
 early_stopping = EarlyStopping(
     patience=EARLY_STOPPING_PATIENCE, 
     verbose=True, 
-    path=os.path.join(output_dirs[2], "best_val_loss_model.pth")
+    path=os.path.join(output_dirs["models"], "best_val_loss_model.pth")  # Use "models" key here
 )
 model_checkpoint = ModelCheckpoint(
-    path=os.path.join(output_dirs[2], "best_val_loss_model.pth"), 
+    path=os.path.join(output_dirs["models"], "best_val_loss_model.pth"),  # Use "models" key here
     verbose=True
 )
+
 
 # ================================================================
 # Initialize GradScaler for Mixed Precision
